@@ -1,6 +1,6 @@
 import { buildCache } from "./arena.js";
-import { CACHE_STATE } from "./constants.js";
-import { getSettings, saveCache, saveCacheMeta } from "./storage.js";
+import { CACHE_STATE, CACHE_VERSION } from "./constants.js";
+import { getArenaAuth, getSettings, saveCache, saveCacheMeta } from "./storage.js";
 
 const notify = async (meta, onStateChange) => {
     if (typeof onStateChange === "function") {
@@ -15,10 +15,14 @@ export const refreshCache = async ({ testOnly = false, settingsOverride = null, 
 
     try {
         const settings = settingsOverride || (await getSettings());
+        const auth = await getArenaAuth();
         const cache = await buildCache({
             channelSlugs: settings.channelSlugs,
+            accountChannelSlugs: settings.accountChannelSlugs,
             blockIds: settings.blockIds,
-            filters: settings.filters
+            filters: settings.filters,
+            includeFeed: settings.includeFeed,
+            token: auth.token
         });
 
         if (!testOnly) {
@@ -34,7 +38,8 @@ export const refreshCache = async ({ testOnly = false, settingsOverride = null, 
 
         return {
             blockCount: cache.blockIds.length,
-            fetchedAt: cache.fetchedAt
+            fetchedAt: cache.fetchedAt,
+            cacheVersion: CACHE_VERSION
         };
     } catch (error) {
         await notify({

@@ -1,5 +1,5 @@
 import { BLOCK_TYPES } from "./constants.js";
-import { fetchArenaBlock, fetchArenaChannel, fetchArenaChannelContentsPage } from "./arena-client.js";
+import { fetchArenaBlock, fetchArenaChannel, fetchArenaChannelContentsPage, fetchArenaFeedPage } from "./arena-client.js";
 import { sanitizeHtml, toPlainText } from "./sanitize.js";
 
 const PER_PAGE = 100;
@@ -57,24 +57,58 @@ const normalizeSource = (source) => {
     };
 };
 
+const normalizeCounts = (counts) => {
+    if (!counts) return null;
+    return {
+        blocks: Number.isFinite(counts.blocks) ? counts.blocks : null,
+        channels: Number.isFinite(counts.channels) ? counts.channels : null,
+        contents: Number.isFinite(counts.contents) ? counts.contents : null,
+        collaborators: Number.isFinite(counts.collaborators) ? counts.collaborators : null
+    };
+};
+
+const normalizeMetadataValue = (value, depth = 0) => {
+    if (value === null || value === undefined || depth > 2) {
+        return null;
+    }
+    if (typeof value === "string") {
+        return value.slice(0, 1000);
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.slice(0, 20).map(item => normalizeMetadataValue(item, depth + 1));
+    }
+    if (typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value)
+                .slice(0, 20)
+                .map(([key, item]) => [key.slice(0, 80), normalizeMetadataValue(item, depth + 1)])
+        );
+    }
+    return `${value}`.slice(0, 1000);
+};
+
+const normalizeMetadata = (metadata) => {
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+        return null;
+    }
+    const entries = Object.entries(metadata).slice(0, 30);
+    return entries.length
+        ? Object.fromEntries(entries.map(([key, value]) => [key.slice(0, 80), normalizeMetadataValue(value)]))
+        : null;
+};
+
 const normalizeConnection = (connection) => {
     if (!connection) return null;
     return {
         id: connection.id ? `${connection.id}` : null,
         position: Number.isFinite(connection.position) ? connection.position : null,
-        pinned: Boolean(connection.pinned),
+        pinned: typeof connection.pinned === "boolean" ? connection.pinned : null,
         connectedAt: connection.connected_at || null,
-        connectedBy: normalizeOwner(connection.connected_by)
-    };
-};
-
-const normalizeCounts = (counts) => {
-    if (!counts) return null;
-    return {
-        blocks: Number.isFinite(counts.blocks) ? counts.blocks : 0,
-        channels: Number.isFinite(counts.channels) ? counts.channels : 0,
-        contents: Number.isFinite(counts.contents) ? counts.contents : 0,
-        collaborators: Number.isFinite(counts.collaborators) ? counts.collaborators : 0
+        connectedBy: normalizeOwner(connection.connected_by),
+        metadata: normalizeMetadata(connection.metadata)
     };
 };
 
@@ -179,7 +213,8 @@ const normalizeArenaItem = (item, context = {}) => {
         updatedAt: item.updated_at || null,
         state: item.state || null,
         visibility: item.visibility || null,
-        commentCount: Number.isFinite(item.comment_count) ? item.comment_count : 0,
+        metadata: normalizeMetadata(item.metadata),
+        commentCount: Number.isFinite(item.comment_count) ? item.comment_count : null,
         owner,
         author: owner?.name || null,
         source,
@@ -197,10 +232,10 @@ const normalizeArenaItem = (item, context = {}) => {
     };
 };
 
-export const fetchChannelBlocks = async (slug, signal, onProgress) => {
+export const fetchChannelBlocks = async (slug, signal, onProgress, token) => {
     const [channel, firstPage] = await Promise.all([
-        fetchArenaChannel(slug, { signal }),
-        fetchArenaChannelContentsPage(slug, { page: 1, per: PER_PAGE, sort: "position_asc", signal })
+        fetchArenaChannel(slug, { signal, token }),
+        fetchArenaChannelContentsPage(slug, { page: 1, per: PER_PAGE, sort: "position_asc", signal, token })
     ]);
 
     const totalPages = Math.min(firstPage?.meta?.total_pages || 1, MAX_PAGES);
@@ -208,7 +243,7 @@ export const fetchChannelBlocks = async (slug, signal, onProgress) => {
 
     for (let page = 2; page <= totalPages; page += 1) {
         pageRequests.push(
-            fetchArenaChannelContentsPage(slug, { page, per: PER_PAGE, sort: "position_asc", signal })
+            fetchArenaChannelContentsPage(slug, { page, per: PER_PAGE, sort: "position_asc", signal, token })
                 .then((payload) => ({ page, payload }))
         );
     }
@@ -243,14 +278,51 @@ export const fetchChannelBlocks = async (slug, signal, onProgress) => {
     return normalized;
 };
 
-export const fetchBlocksById = async (ids, signal) => {
-    const responses = await Promise.all(ids.map((id) => fetchArenaBlock(id, { signal })));
+export const fetchBlocksById = async (ids, signal, token) => {
+    const responses = await Promise.all(ids.map((id) => fetchArenaBlock(id, { signal, token })));
     return responses.map((item) => normalizeArenaItem(item));
 };
 
-export const buildCache = async ({ channelSlugs = [], blockIds = [], filters = BLOCK_TYPES, signal, onProgress }) => {
+export const fetchFeedBlocks = async (token, signal) => {
+    if (!token) {
+        return [];
+    }
+    const payload = await fetchArenaFeedPage({ limit: 100, token, signal });
+    const activities = Array.isArray(payload?.data) ? payload.data : [];
+    const items = [];
+
+    activities.forEach((activity) => {
+        const candidates = [activity?.item, activity?.target, activity?.parent];
+        candidates.forEach((item) => {
+            if (!item || !BLOCK_TYPES.includes(item.type)) {
+                return;
+            }
+            const sourceChannel = item.type !== "Channel" && activity?.target?.type === "Channel"
+                ? {
+                      title: activity.target.title || null,
+                      slug: activity.target.slug || null
+                  }
+                : null;
+            items.push(normalizeArenaItem(item, { sourceChannel }));
+        });
+    });
+
+    return items.filter((item, index, list) => list.findIndex(candidate => candidate.id === item.id) === index);
+};
+
+export const buildCache = async ({
+    channelSlugs = [],
+    accountChannelSlugs = [],
+    blockIds = [],
+    filters = BLOCK_TYPES,
+    includeFeed = false,
+    token = "",
+    signal,
+    onProgress
+}) => {
     const allowedTypes = new Set(filters?.length ? filters : BLOCK_TYPES);
     const map = new Map();
+    const allChannelSlugs = [...new Set([...channelSlugs, ...accountChannelSlugs].filter(Boolean))];
 
     const addBlocks = (blocks) => {
         for (const block of blocks) {
@@ -260,12 +332,16 @@ export const buildCache = async ({ channelSlugs = [], blockIds = [], filters = B
         }
     };
 
-    for (const slug of channelSlugs) {
-        addBlocks(await fetchChannelBlocks(slug, signal, onProgress));
+    for (const slug of allChannelSlugs) {
+        addBlocks(await fetchChannelBlocks(slug, signal, onProgress, token));
     }
 
     if (blockIds.length) {
-        addBlocks(await fetchBlocksById(blockIds, signal));
+        addBlocks(await fetchBlocksById(blockIds, signal, token));
+    }
+
+    if (includeFeed && token) {
+        addBlocks(await fetchFeedBlocks(token, signal));
     }
 
     const blockIdsList = Array.from(map.keys());
@@ -273,7 +349,13 @@ export const buildCache = async ({ channelSlugs = [], blockIds = [], filters = B
         blocksById: Object.fromEntries(blockIdsList.map(id => [id, map.get(id)])),
         blockIds: blockIdsList,
         fetchedAt: Date.now(),
-        sources: { channels: channelSlugs, blockIds }
+        sources: {
+            channels: allChannelSlugs,
+            manualChannels: channelSlugs,
+            accountChannels: accountChannelSlugs,
+            blockIds,
+            feed: Boolean(includeFeed && token)
+        }
     };
 };
 

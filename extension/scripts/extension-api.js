@@ -41,7 +41,8 @@ export const runtime = {
     sendMessage: promisify(api.runtime, "sendMessage"),
     getURL: (...args) => api.runtime.getURL(...args),
     onMessage: api.runtime.onMessage,
-    onInstalled: api.runtime.onInstalled
+    onInstalled: api.runtime.onInstalled,
+    onStartup: api.runtime.onStartup
 };
 
 export const bookmarks = api.bookmarks

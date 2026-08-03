@@ -1,224 +1,419 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>are.na blocks new tab · settings</title>
+        <link rel="stylesheet" href="../styles/style.css" />
+        <script type="module" src="../scripts/settings.js" defer></script>
+    </head>
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>are.na blocks new tab · settings</title>
-    <link rel="stylesheet" href="../styles/style.css">
-    <script type="module" src="../scripts/settings.js" defer></script>
-</head>
-
-<body data-page="settings">
-    <div id="app-shell">
-        <header id="header-bar">
-            <button class="button" id="back-button" type="button">← Back</button>
-            <span id="unsaved-indicator" class="hidden">You have unsaved changes</span>
-            <button class="button" id="save-all-button" type="button">Save All</button>
-        </header>
-        <main id="content-area">
-            <form class="settings-form" id="settings-form">
-                <fieldset data-section="sources">
-                    <legend>Content Sources</legend>
-                    <label class="setting-label" for="channel-slugs">Channel slugs</label>
-                    <textarea id="channel-slugs" name="channelSlugs"
-                        placeholder="design-inspiration, architectural-brutalism"></textarea>
-                    <span class="notice">Comma-separated Are.na channel slugs. Leave blank if you only want specific
-                        block IDs.</span>
-
-                    <label class="setting-label" for="block-ids">Block IDs</label>
-                    <textarea id="block-ids" name="blockIds" placeholder="12345, 67890"></textarea>
-                    <span class="notice">Comma-separated Are.na block IDs (numbers). Optional.</span>
-
-                    <p class="setting-label">Content filters</p>
-                    <div class="filters-grid">
-                        <label class="inline"><input type="checkbox" name="filters" value="Image" checked>
-                            <span>Image</span></label>
-                        <label class="inline"><input type="checkbox" name="filters" value="Text" checked>
-                            <span>Text</span></label>
-                        <label class="inline"><input type="checkbox" name="filters" value="Link">
-                            <span>Link</span></label>
-                        <label class="inline"><input type="checkbox" name="filters" value="Attachment">
-                            <span>Attachment</span></label>
-                        <label class="inline"><input type="checkbox" name="filters" value="Embed">
-                            <span>Embed</span></label>
-                        <label class="inline"><input type="checkbox" name="filters" value="Channel">
-                            <span>Channel</span></label>
-                    </div>
-                    <span class="notice">Select the block types to include when refreshing the cache.</span>
-
-                    <div class="settings-actions settings-actions--compact">
-                        <button class="button" type="button" id="save-refresh">Save &amp; Refresh</button>
-                        <span class="notice" id="cache-info">Cache idle</span>
-                    </div>
-                </fieldset>
-
-                <fieldset data-section="display">
-                    <legend>Display</legend>
-                    <label class="setting-label" for="block-count">Number of blocks</label>
-                    <div class="slider-field">
-                        <input id="block-count" name="blockCount" type="range" min="1" max="6" step="1" value="1">
-                        <output id="block-count-output" for="block-count">1</output>
-                    </div>
-                    <span class="notice">Choose how many random blocks are shown each time you open a new tab.</span>
-
-                    <label class="setting-label" for="tile-size">Block size</label>
-                    <div class="slider-field">
-                        <input id="tile-size" name="tileSize" type="range" min="0" max="5" step="1" value="0">
-                        <output id="tile-size-output" for="tile-size">AUTO</output>
-                    </div>
-                    <span class="notice">Auto adapts to the viewport; XS-XL lock in a fixed tile size.</span>
-
-                    <p class="setting-label">Theme</p>
-                    <div class="theme-options">
-                        <label class="inline"><input type="radio" name="theme" value="system" checked>
-                            <span>System</span></label>
-                        <label class="inline"><input type="radio" name="theme" value="light"> <span>Light</span></label>
-                        <label class="inline"><input type="radio" name="theme" value="dark"> <span>Dark</span></label>
-                    </div>
-
-                    <div class="toggle-group">
-                        <label class="inline">
-                            <input type="checkbox" id="show-header" name="showHeader" checked>
-                            <span>Show header with bookmarks</span>
-                        </label>
-                        <label class="inline">
-                            <input type="checkbox" id="show-footer" name="showFooter" checked>
-                            <span>Show footer information</span>
-                        </label>
-                    </div>
-
-                    <div class="settings-actions settings-actions--compact">
-                        <button class="button" type="button" id="save-display">Save display settings</button>
-                    </div>
-                </fieldset>
-
-                <div class="settings-actions">
-                    <button class="button" type="reset">Reset to defaults</button>
-                    <a class="button" href="new-tab.html" target="_blank" rel="noopener">Open new tab preview</a>
+    <body data-page="settings">
+        <div id="app-shell">
+            <header id="header-bar">
+                <button class="button" id="back-button" type="button">← Back</button>
+                <div class="settings-header-status" aria-live="polite">
+                    <span id="unsaved-indicator" class="hidden">You have unsaved changes</span>
+                    <span id="settings-status"></span>
                 </div>
+                <button class="button" id="save-all-button" type="button">Save all</button>
+            </header>
 
-                <fieldset data-section="about" class="settings-about">
-                    <legend>About</legend>
-                    <h3>About this project</h3>
-                    <p><strong>are.na blocks new tab</strong> swaps the default new tab for a curated grid of Are.na
-                        content. Each time you open a tab the extension randomly chooses from the cached blocks gathered
-                        from your configured channels and specific block IDs.</p>
-                    <h4>How sources work</h4>
-                    <p>Use <em>channel slugs</em> (the text after <code>/channel/</code> in an Are.na URL) to pull in
-                        every block from a channel, and add individual <em>block IDs</em> (the number after
-                        <code>/block/</code>) when you want precise picks. The cache mixes everything together and the
-                        new tab view pulls a fresh selection on load.</p>
-                    <p>Channel example: <code>https://www.are.na/lok/ephemeral-visions</code> → slug is
-                        <code>ephemeral-visions</code></p>
-                    <p>Block example: <code>https://www.are.na/block/40240825</code> → ID is <code>40240825</code></p>
-                    <h4>New to Are.na?</h4>
-                    <p>Are.na is a creative research platform for collecting ideas, references, and projects. You can
-                        browse publicly, but creating a free account at <a href="https://www.are.na" target="_blank"
-                            rel="noopener">are.na</a> lets you follow channels, save blocks, and build your own
-                        collections.</p>
-                    <h4>About the maker</h4>
-                    <p>Hi, I’m Leon. You can find more of my work at <a href="https://leonw.ong" target="_blank"
-                            rel="noopener">leonw.ong</a> and <a href="https://lok.computer" target="_blank"
-                            rel="noopener">lok.computer</a>. I share on Are.na at <a href="https://are.na/lok"
-                            target="_blank" rel="noopener">@lok</a>, on Bluesky at <a
-                            href="https://bsky.app/profile/did:plc:2p3gp2g2teuwpuv4skhiik3i" target="_blank"
-                            rel="noopener">@lok.computer</a>, and on Mastodon at <a href="https://rex.cat/@lok"
-                            target="_blank" rel="noopener">@lok@rex.cat</a>. Questions or ideas? Reach out through those
-                        links or open an issue on <a href="https://github.com/l3ony2k/are.na-blocks-new-tab"
-                            target="_blank" rel="noopener">GitHub</a>.</p>
-                </fieldset>
+            <main id="content-area">
+                <div class="settings-shell">
+                    <nav class="settings-nav" aria-label="Settings sections">
+                        <a class="settings-nav-button is-active" href="#sources" data-settings-nav="sources" aria-current="location">Sources</a>
+                        <a class="settings-nav-button" href="#account" data-settings-nav="account">Are.na account</a>
+                        <a class="settings-nav-button" href="#display" data-settings-nav="display">Display</a>
+                        <a class="settings-nav-button" href="#about" data-settings-nav="about">About</a>
+                    </nav>
 
-                <fieldset data-section="changelog" class="settings-changelog">
-                    <legend>Changelog</legend>
-                    <ul class="changelog-list">
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.16</span>
-                            <span class="changelog-date">2026-04-15</span>
-                            <span class="changelog-desc">Refactor new tab startup to paint a clean background before rendering UI</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.15</span>
-                            <span class="changelog-date">2026-03-12</span>
-                            <span class="changelog-desc">Migrate to Are.na API v3 and fix manual cache refresh</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.14</span>
-                            <span class="changelog-date">2026-01-13</span>
-                            <span class="changelog-desc">Add changelog to settings page</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.13</span>
-                            <span class="changelog-date">2026-01-12</span>
-                            <span class="changelog-desc">Add unsaved changes indicator and dirty state tracking</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.12</span>
-                            <span class="changelog-date">2026-01-12</span>
-                            <span class="changelog-desc">Improve error handling and display in UI</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.11</span>
-                            <span class="changelog-date">2025-11-27</span>
-                            <span class="changelog-desc">Add cache status LED and improve tooltip info</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.10</span>
-                            <span class="changelog-date">2025-10-12</span>
-                            <span class="changelog-desc">Refactor code structure; improve readability and
-                                maintainability</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.9</span>
-                            <span class="changelog-date">2025-10-12</span>
-                            <span class="changelog-desc">Enhance settings functionality, improve cache handling</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.8</span>
-                            <span class="changelog-date">2025-10-12</span>
-                            <span class="changelog-desc">Enhance bookmark overflow handling and adjust styling</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.6</span>
-                            <span class="changelog-date">2025-10-12</span>
-                            <span class="changelog-desc">Enhance bookmark menu functionality and styling</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.5</span>
-                            <span class="changelog-date">2025-10-12</span>
-                            <span class="changelog-desc">Standardize naming across documentation and UI</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.4</span>
-                            <span class="changelog-date">2025-10-12</span>
-                            <span class="changelog-desc">Add tile size options, improve bookmark handling</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.3</span>
-                            <span class="changelog-date">2025-10-11</span>
-                            <span class="changelog-desc">Add block size selection and improve layout handling</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.2</span>
-                            <span class="changelog-date">2025-10-11</span>
-                            <span class="changelog-desc">Update documentation and improve UI layout</span>
-                        </li>
-                        <li class="changelog-item">
-                            <span class="changelog-version">v0.1.1</span>
-                            <span class="changelog-date">2025-10-11</span>
-                            <span class="changelog-desc">Initial release</span>
-                        </li>
-                    </ul>
-                </fieldset>
+                    <form class="settings-form" id="settings-form">
+                        <section class="settings-page" id="sources" data-settings-page="sources" aria-labelledby="sources-heading">
+                            <h2 class="settings-section-heading" id="sources-heading">Sources</h2>
+                            <fieldset>
+                                <legend>Manual sources</legend>
+                                <label class="setting-label" for="channel-slugs">Channel slugs</label>
+                                <textarea id="channel-slugs" name="channelSlugs" placeholder="design-inspiration, architectural-brutalism"></textarea>
+                                <span class="notice">Comma-separated Are.na channel slugs.</span>
 
-            </form>
-        </main>
-        <footer id="footer-bar">
-            <span>are.na blocks new tab · settings</span>
-            <a class="button" href="https://github.com/l3ony2k/are.na-blocks-new-tab" target="_blank"
-                rel="noopener">Project repo</a>
-        </footer>
-    </div>
-</body>
+                                <label class="setting-label" for="block-ids">Block IDs</label>
+                                <textarea id="block-ids" name="blockIds" placeholder="12345, 67890"></textarea>
+                                <span class="notice">Comma-separated Are.na block IDs. Optional.</span>
+                            </fieldset>
 
+                            <fieldset>
+                                <legend>Content filters</legend>
+                                <div class="filters-grid">
+                                    <label class="inline"><input type="checkbox" name="filters" value="Image" checked /> <span>Image</span></label>
+                                    <label class="inline"><input type="checkbox" name="filters" value="Text" checked /> <span>Text</span></label>
+                                    <label class="inline"><input type="checkbox" name="filters" value="Link" /> <span>Link</span></label>
+                                    <label class="inline"><input type="checkbox" name="filters" value="Attachment" /> <span>Attachment</span></label>
+                                    <label class="inline"><input type="checkbox" name="filters" value="Embed" /> <span>Embed</span></label>
+                                    <label class="inline"><input type="checkbox" name="filters" value="Channel" /> <span>Channel</span></label>
+                                </div>
+                                <span class="notice">Filters apply to manual channels, account channels, block IDs, and feed items.</span>
+                            </fieldset>
+
+                            <div class="settings-actions settings-actions--compact settings-actions--cache">
+                                <button class="button source-save-button" type="button" id="save-refresh">Save &amp; Refresh</button>
+                                <span class="notice" id="cache-info">Cache idle</span>
+                                <button
+                                    class="button button--danger-hover clear-cache-button"
+                                    type="button"
+                                    id="clear-cache-button"
+                                    aria-haspopup="dialog"
+                                    aria-controls="clear-cache-dialog"
+                                >Clear cache</button>
+                            </div>
+                        </section>
+
+                        <section class="settings-page" id="account" data-settings-page="account" aria-labelledby="account-heading">
+                            <h2 class="settings-section-heading" id="account-heading">Are.na account</h2>
+                            <fieldset>
+                                <legend>Connection</legend>
+                                <div class="account-summary" id="account-summary">
+                                    <span class="account-state">Not connected</span>
+                                </div>
+                                <label class="setting-label" for="arena-token">Personal access token</label>
+                                <div class="account-token-row">
+                                    <input id="arena-token" name="arenaToken" type="password" autocomplete="off" placeholder="Paste token" />
+                                    <button class="button" id="connect-arena" type="button">Connect</button>
+                                    <button class="button" id="disconnect-arena" type="button" hidden>Disconnect</button>
+                                </div>
+                                <span class="notice">
+                                    Create a read-only token in
+                                    <a href="https://www.are.na/settings/personal-access-tokens" target="_blank" rel="noopener">Are.na personal access tokens</a>.
+                                    The token is stored only in this extension’s local storage.
+                                </span>
+                            </fieldset>
+
+                            <fieldset id="account-sources-fieldset" disabled>
+                                <legend>Account sources</legend>
+                                <label class="inline account-feed-option">
+                                    <input id="include-feed" name="includeFeed" type="checkbox" />
+                                    <span>Include my Are.na feed</span>
+                                </label>
+                                <span class="notice">The most recent feed items are added to the cached source pool.</span>
+
+                                <div class="account-channel-header">
+                                    <p class="setting-label">My channels</p>
+                                    <button class="button" id="reload-account-channels" type="button">Reload channels</button>
+                                </div>
+                                <div class="channel-picker" id="owned-channel-picker">
+                                    <p class="channel-picker-empty">Connect your account to load channels.</p>
+                                </div>
+
+                                <p class="setting-label">Followed channels</p>
+                                <div class="channel-picker" id="followed-channel-picker">
+                                    <p class="channel-picker-empty">Connect your account to load channels.</p>
+                                </div>
+                                <span class="notice" id="account-channel-note"></span>
+                            </fieldset>
+
+                            <div class="settings-actions settings-actions--compact">
+                                <button class="button source-save-button" type="button" id="save-account-refresh">Save &amp; Refresh</button>
+                            </div>
+                        </section>
+
+                        <section class="settings-page" id="display" data-settings-page="display" aria-labelledby="display-heading">
+                            <h2 class="settings-section-heading" id="display-heading">Display</h2>
+                            <fieldset>
+                                <legend>Theme</legend>
+                                <div class="theme-options">
+                                    <label class="inline"><input type="radio" name="theme" value="system" checked /> <span>System</span></label>
+                                    <label class="inline"><input type="radio" name="theme" value="light" /> <span>Light</span></label>
+                                    <label class="inline"><input type="radio" name="theme" value="dark" /> <span>Dark</span></label>
+                                </div>
+                                <span class="notice">Theme changes preview immediately and are applied everywhere after saving.</span>
+                            </fieldset>
+
+                            <fieldset>
+                                <legend>Bars</legend>
+                                <div class="toggle-group">
+                                    <label class="inline">
+                                        <input type="checkbox" id="show-header" name="showHeader" checked />
+                                        <span>Show top bar</span>
+                                    </label>
+                                    <label class="inline">
+                                        <input type="checkbox" id="show-footer" name="showFooter" checked />
+                                        <span>Show bottom bar</span>
+                                    </label>
+                                </div>
+
+                                <div class="bar-editor">
+                                    <h3>Top bar</h3>
+                                    <div class="bar-slot-grid">
+                                        <label for="top-left-component">Left component
+                                            <select id="top-left-component" data-bar-slot="top.left">
+                                                <option value="none">None</option>
+                                                <option value="bookmarks" selected>Bookmarks</option>
+                                                <option value="cache">Cache indicator</option>
+                                                <option value="settings">Settings</option>
+                                                <option value="date">Date</option>
+                                                <option value="time">Time</option>
+                                                <option value="dateTime">Date + time</option>
+                                            </select>
+                                        </label>
+                                        <label for="top-right-component">Right component
+                                            <select id="top-right-component" data-bar-slot="top.right">
+                                                <option value="none" selected>None</option>
+                                                <option value="bookmarks">Bookmarks</option>
+                                                <option value="cache">Cache indicator</option>
+                                                <option value="settings">Settings</option>
+                                                <option value="date">Date</option>
+                                                <option value="time">Time</option>
+                                                <option value="dateTime">Date + time</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="bar-editor">
+                                    <h3>Bottom bar</h3>
+                                    <div class="bar-slot-grid">
+                                        <label for="bottom-left-component">Left component
+                                            <select id="bottom-left-component" data-bar-slot="bottom.left">
+                                                <option value="none">None</option>
+                                                <option value="bookmarks">Bookmarks</option>
+                                                <option value="cache" selected>Cache indicator</option>
+                                                <option value="settings">Settings</option>
+                                                <option value="date">Date</option>
+                                                <option value="time">Time</option>
+                                                <option value="dateTime">Date + time</option>
+                                            </select>
+                                        </label>
+                                        <label for="bottom-right-component">Right component
+                                            <select id="bottom-right-component" data-bar-slot="bottom.right">
+                                                <option value="none">None</option>
+                                                <option value="bookmarks">Bookmarks</option>
+                                                <option value="cache">Cache indicator</option>
+                                                <option value="settings" selected>Settings</option>
+                                                <option value="date">Date</option>
+                                                <option value="time">Time</option>
+                                                <option value="dateTime">Date + time</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="bar-format-grid" id="bar-format-options" hidden>
+                                    <label for="date-format" id="date-format-field" hidden>Date format
+                                        <select id="date-format">
+                                            <option value="system">System default</option>
+                                            <option value="short">Short numeric</option>
+                                            <option value="long">Long with weekday</option>
+                                            <option value="iso">ISO 8601</option>
+                                        </select>
+                                    </label>
+                                    <label for="time-format" id="time-format-field" hidden>Time format
+                                        <select id="time-format">
+                                            <option value="system">System default</option>
+                                            <option value="12-hour">12-hour</option>
+                                            <option value="24-hour">24-hour</option>
+                                            <option value="12-hour-seconds">12-hour with seconds</option>
+                                            <option value="24-hour-seconds">24-hour with seconds</option>
+                                        </select>
+                                    </label>
+                                </div>
+
+                                <p class="settings-access-warning" id="settings-access-warning" role="note" hidden>
+                                    The Settings button will not be visible. Open your browser’s extension menu, find are.na blocks new tab, and choose Options or Extension options to return here.
+                                </p>
+                            </fieldset>
+
+                            <fieldset>
+                                <legend>Content amount and size</legend>
+                                <label class="setting-label" for="block-count">Number of blocks</label>
+                                <div class="slider-field">
+                                    <input id="block-count" name="blockCount" type="range" min="1" max="6" step="1" value="1" />
+                                    <output id="block-count-output" for="block-count">1</output>
+                                </div>
+
+                                <label class="setting-label" for="tile-size">Block size</label>
+                                <div class="slider-field">
+                                    <input id="tile-size" name="tileSize" type="range" min="0" max="5" step="1" value="0" />
+                                    <output id="tile-size-output" for="tile-size">AUTO</output>
+                                </div>
+                                <span class="notice">Auto adapts to the available center viewport between the header and footer.</span>
+
+                            </fieldset>
+
+                            <fieldset>
+                                <legend>Block information</legend>
+                                <div class="metadata-options">
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="title" checked /> <span>Title</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="description" checked /> <span>Description</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="createdAt" checked /> <span>Created date</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="updatedAt" /> <span>Updated date</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="blockId" checked /> <span>Block ID</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="type" checked /> <span>Block type</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="author" /> <span>Author</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="sourceChannel" /> <span>Source channel</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="source" /> <span>Source website</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="comments" /> <span>Comment count</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="visibility" /> <span>Visibility</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="state" /> <span>State</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="connectedBy" /> <span>Connected by</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="connectedAt" /> <span>Connected date</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="position" /> <span>Channel position</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="pinned" /> <span>Pinned state</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="itemCount" /> <span>Channel item count</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="attachment" /> <span>Attachment details</span></label>
+                                    <label class="inline"><input type="checkbox" name="blockMetaFields" value="customMetadata" /> <span>Custom metadata</span></label>
+                                </div>
+                                <span class="notice">Fields with no value on a block stay hidden. Disable every field for an image/content-only card.</span>
+                            </fieldset>
+
+                            <div class="settings-actions settings-actions--compact">
+                                <button class="button" type="button" id="save-display">Save display settings</button>
+                                <button class="button" type="reset">Reset to defaults</button>
+                            </div>
+                        </section>
+
+                        <section class="settings-page" id="about" data-settings-page="about" aria-labelledby="about-heading">
+                            <h2 class="settings-section-heading" id="about-heading">About</h2>
+                            <fieldset class="settings-about">
+                                <legend>About this project</legend>
+                                <p>
+                                    <strong>are.na blocks new tab</strong> swaps the default new tab for a curated selection of Are.na content. Each new tab pulls blocks from the sources you enable.
+                                </p>
+                                <h4>How manual sources work</h4>
+                                <p>Use <em>channel slugs</em> to pull blocks from public channels, and add individual <em>block IDs</em> when you want precise picks.</p>
+                                <p>Channel example: <code>https://www.are.na/lok/ephemeral-visions</code> → <code>ephemeral-visions</code></p>
+                                <p>Block example: <code>https://www.are.na/block/40240825</code> → <code>40240825</code></p>
+                                <h4>New to Are.na?</h4>
+                                <p>
+                                    Are.na is a creative research platform for collecting ideas, references, and projects. Visit
+                                    <a href="https://www.are.na" target="_blank" rel="noopener">are.na</a> to browse or create an account.
+                                </p>
+                                <h4>About the maker</h4>
+                                <p>
+                                    Hi, I’m Leon. You can find more of my work at <a href="https://lok.computer" target="_blank" rel="noopener">lok.computer</a>. I share on Are.na at
+                                    <a href="https://are.na/lok" target="_blank" rel="noopener">@lok</a>, on Bluesky at
+                                    <a href="https://bsky.app/profile/did:plc:2p3gp2g2teuwpuv4skhiik3i" target="_blank" rel="noopener">@lok.computer</a>, and on Mastodon at
+                                    <a href="https://rex.cat/@lok" target="_blank" rel="noopener">@lok@rex.cat</a>. Questions or ideas? Reach out through those links or open an issue on
+                                    <a href="https://github.com/l3ony2k/are.na-blocks-new-tab" target="_blank" rel="noopener">GitHub</a>.
+                                </p>
+                            </fieldset>
+
+                            <fieldset class="settings-changelog">
+                                <legend>Changelog</legend>
+                                <ul class="changelog-list">
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.18</span>
+                                        <span class="changelog-date">2026-07-27</span>
+                                        <span class="changelog-desc">Add customizable bars, date and time components, and block information controls</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.17</span>
+                                        <span class="changelog-date">2026-07-27</span>
+                                        <span class="changelog-desc">Add settings subpages, account sources, and manual themes</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.16</span>
+                                        <span class="changelog-date">2026-04-15</span>
+                                        <span class="changelog-desc">Refactor new tab startup to paint a clean background before rendering UI</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.15</span>
+                                        <span class="changelog-date">2026-03-12</span>
+                                        <span class="changelog-desc">Migrate to Are.na API v3 and fix manual cache refresh</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.14</span>
+                                        <span class="changelog-date">2026-01-13</span>
+                                        <span class="changelog-desc">Add changelog to settings page</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.13</span>
+                                        <span class="changelog-date">2026-01-12</span>
+                                        <span class="changelog-desc">Add unsaved changes indicator and dirty state tracking</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.12</span>
+                                        <span class="changelog-date">2026-01-12</span>
+                                        <span class="changelog-desc">Improve error handling and display in UI</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.11</span>
+                                        <span class="changelog-date">2025-11-27</span>
+                                        <span class="changelog-desc">Add cache status LED and improve tooltip info</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.10</span>
+                                        <span class="changelog-date">2025-10-12</span>
+                                        <span class="changelog-desc">Refactor code structure; improve readability and maintainability</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.9</span>
+                                        <span class="changelog-date">2025-10-12</span>
+                                        <span class="changelog-desc">Enhance settings functionality, improve cache handling</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.8</span>
+                                        <span class="changelog-date">2025-10-12</span>
+                                        <span class="changelog-desc">Enhance bookmark overflow handling and adjust styling</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.6</span>
+                                        <span class="changelog-date">2025-10-12</span>
+                                        <span class="changelog-desc">Enhance bookmark menu functionality and styling</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.5</span>
+                                        <span class="changelog-date">2025-10-12</span>
+                                        <span class="changelog-desc">Standardize naming across documentation and UI</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.4</span>
+                                        <span class="changelog-date">2025-10-12</span>
+                                        <span class="changelog-desc">Add tile size options, improve bookmark handling</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.3</span>
+                                        <span class="changelog-date">2025-10-11</span>
+                                        <span class="changelog-desc">Add block size selection and improve layout handling</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.2</span>
+                                        <span class="changelog-date">2025-10-11</span>
+                                        <span class="changelog-desc">Update documentation and improve UI layout</span>
+                                    </li>
+                                    <li class="changelog-item">
+                                        <span class="changelog-version">v0.1.1</span>
+                                        <span class="changelog-date">2025-10-11</span>
+                                        <span class="changelog-desc">Initial release</span>
+                                    </li>
+                                </ul>
+                            </fieldset>
+                        </section>
+                    </form>
+                </div>
+            </main>
+
+            <footer id="footer-bar">
+                <span>are.na blocks new tab · settings</span>
+                <a class="button" href="https://github.com/l3ony2k/are.na-blocks-new-tab" target="_blank" rel="noopener">Project repo</a>
+            </footer>
+
+            <dialog
+                class="settings-dialog"
+                id="clear-cache-dialog"
+                aria-labelledby="clear-cache-dialog-title"
+                aria-describedby="clear-cache-dialog-description"
+            >
+                <div class="settings-dialog-body">
+                    <h2 id="clear-cache-dialog-title">Clear all cached blocks?</h2>
+                    <p id="clear-cache-dialog-description">
+                        This will remove every cached block from this browser. It can help when the cache is not refreshing or appears stuck between extension versions. After clearing it, click <strong>Save &amp; Refresh</strong> to build a fresh cache.
+                    </p>
+                </div>
+                <div class="settings-dialog-actions">
+                    <button class="button" id="clear-cache-cancel" type="button">Cancel</button>
+                    <button class="button button--danger" id="clear-cache-confirm" type="button">Clear cache</button>
+                </div>
+            </dialog>
+        </div>
+    </body>
 </html>

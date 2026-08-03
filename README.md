@@ -19,8 +19,8 @@ This extension replaces the browser’s default new tab with a grid of random Ar
 
 ## Settings Page
 - **Content Sources:** Configure channel slugs, specific block IDs, and the block types (filters) to include. Click **Save & Refresh** to store the changes and fetch a fresh cache in one step.
-- **Display:** Adjust the number of blocks, tile size preset, theme, and whether the header or footer is visible. Click **Save display settings** to apply without triggering a cache refresh.
-- **Global actions:** Use **Reset to defaults** to load the out-of-box configuration into the form (Image/Text filters, default channels, one block, auto sizing). Choose **Open new tab preview** to view the layout in a separate tab while tweaking options.
+- **Display:** Adjust block amount and size, theme, bar components, and supporting block information. Click **Save display settings** to apply without triggering a cache refresh.
+- **Global actions:** Use **Reset to defaults** to load the out-of-box configuration into the form (Image/Text filters, default channels, one block, auto sizing).
 
 ## Screenshots
 

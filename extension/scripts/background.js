@@ -59,3 +59,21 @@ runtime.onInstalled.addListener(async () => {
         await updateCacheMeta({ state: CACHE_STATE.idle, lastUpdated: 0, lastError: null });
     }
 });
+
+runtime.onStartup?.addListener(async () => {
+    try {
+        const { cache } = await getCache();
+        if (cache.blockIds.length) {
+            await updateCacheMeta({
+                state: CACHE_STATE.idle,
+                lastUpdated: cache.fetchedAt,
+                lastError: null,
+                blockCount: cache.blockIds.length
+            });
+            return;
+        }
+        await handleRefreshRequest({ reason: "startup" });
+    } catch (error) {
+        console.error("Startup cache recovery failed", error);
+    }
+});

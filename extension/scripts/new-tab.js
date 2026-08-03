@@ -1,10 +1,11 @@
-import { CACHE_STATE, MESSAGES, STORAGE_KEYS, TILE_SIZE_OPTIONS } from "./constants.js";
-import { formatRelativeTime, formatExactDate } from "./time.js";
+import { CACHE_STATE, CACHE_VERSION, MESSAGES, STORAGE_KEYS, TILE_SIZE_OPTIONS } from "./constants.js";
+import { formatRelativeTime } from "./time.js";
 import { bookmarks, runtime, storage } from "./extension-api.js";
 import { chooseRandomBlocks } from "./arena.js";
 import { getCache, getSettings } from "./storage.js";
 import { applyTheme } from "./theme.js";
 import { refreshCache } from "./cache-refresh.js";
+import { formatBarDate, formatBarTime, getBlockMetaItems } from "./customization.js";
 
 const TILE_SIZE_MAP = {
   xs: 225,
@@ -16,7 +17,7 @@ const TILE_SIZE_MAP = {
 
 const AUTO_TILE_SIZES = [420, 360, 320, 300, 260, 225];
 const TILE_GAP = 18;
-const INFO_HEIGHT = 150;
+const INFO_HEIGHT = 0;
 const RESIZE_DEBOUNCE = 150;
 const BOOKMARK_MENU_OFFSET = 4;
 const BOOKMARK_SUBMENU_OFFSET = 6;
@@ -96,6 +97,14 @@ const elements = {
   header: document.getElementById("header-bar"),
   footer: document.getElementById("footer-bar"),
   bookmarkStrip: document.getElementById("bookmark-strip"),
+  barComponentPool: document.getElementById("bar-component-pool"),
+  barDate: document.getElementById("bar-date"),
+  barTime: document.getElementById("bar-time"),
+  barDateTime: document.getElementById("bar-date-time"),
+  topBarLeft: document.getElementById("top-bar-left"),
+  topBarRight: document.getElementById("top-bar-right"),
+  bottomBarLeft: document.getElementById("bottom-bar-left"),
+  bottomBarRight: document.getElementById("bottom-bar-right"),
   blocksContainer: document.getElementById("blocks-container"),
   cacheButton: document.getElementById("cache-status-button"),
   cacheLabel: document.getElementById("cache-label"),
@@ -105,8 +114,19 @@ const elements = {
 };
 
 let resizeTimer = null;
+let clockTimer = null;
+let bookmarkResizeObserver = null;
 const openBookmarkFolders = new Set();
 let cacheRefreshPromise = null;
+
+const barComponents = {
+  bookmarks: elements.bookmarkStrip,
+  cache: document.querySelector(".bar-component--cache"),
+  settings: document.querySelector(".bar-component--settings"),
+  date: elements.barDate,
+  time: elements.barTime,
+  dateTime: elements.barDateTime,
+};
 
 const setMenuLayerActive = (isActive) => {
   const layer = elements.bookmarkMenuLayer;
@@ -226,6 +246,7 @@ async function maybeBootstrapCache() {
       await storage.set({
         [STORAGE_KEYS.bootstrap]: {
           status: "complete",
+          cacheVersion: CACHE_VERSION,
           timestamp: Date.now(),
         },
       });
@@ -236,19 +257,10 @@ async function maybeBootstrapCache() {
   }
 
   try {
-    const record = await storage.get(STORAGE_KEYS.bootstrap);
-    const previous = record?.[STORAGE_KEYS.bootstrap];
-    const status = typeof previous === "string" ? previous : previous?.status;
-    if (status === "pending") {
-      return;
-    }
-    if (status === "complete") {
-      return;
-    }
-
     await storage.set({
       [STORAGE_KEYS.bootstrap]: {
         status: "pending",
+        cacheVersion: CACHE_VERSION,
         timestamp: Date.now(),
       },
     });
@@ -258,6 +270,7 @@ async function maybeBootstrapCache() {
       await storage.set({
         [STORAGE_KEYS.bootstrap]: {
           status: "complete",
+          cacheVersion: CACHE_VERSION,
           timestamp: Date.now(),
         },
       });
@@ -265,6 +278,7 @@ async function maybeBootstrapCache() {
       await storage.set({
         [STORAGE_KEYS.bootstrap]: {
           status: "error",
+          cacheVersion: CACHE_VERSION,
           timestamp: Date.now(),
         },
       });
@@ -304,10 +318,19 @@ function wireEvents() {
   window.addEventListener("scroll", handleScroll, { passive: true });
   if (elements.bookmarkStrip) {
     elements.bookmarkStrip.addEventListener("wheel", handleBookmarkWheel, { passive: false });
+    if (typeof ResizeObserver === "function") {
+      bookmarkResizeObserver = new ResizeObserver(() => {
+        requestAnimationFrame(() => applyBookmarkOverflow());
+      });
+      bookmarkResizeObserver.observe(elements.bookmarkStrip);
+    }
   }
   elements.cacheButton?.addEventListener("click", handleCacheButtonClick);
   document.addEventListener("pointerdown", handleDocumentPointerDown, true);
   document.addEventListener("keydown", handleDocumentKeyDown);
+  document.addEventListener("visibilitychange", updateClock);
+  clearInterval(clockTimer);
+  clockTimer = setInterval(updateClock, 1000);
 }
 
 async function renderAll() {
@@ -319,11 +342,78 @@ async function renderAll() {
 function toggleRegions() {
   const showHeader = state.settings?.showHeader !== false;
   const showFooter = state.settings?.showFooter !== false;
+  const layout = state.settings?.barLayout;
+  closeAllBookmarkFolders();
+  Object.values(barComponents).forEach((component) => {
+    if (component && elements.barComponentPool) {
+      elements.barComponentPool.appendChild(component);
+    }
+  });
   if (elements.header) {
     elements.header.hidden = !showHeader;
   }
   if (elements.footer) {
     elements.footer.hidden = !showFooter;
+  }
+  renderBar(layout?.top, elements.topBarLeft, elements.topBarRight);
+  renderBar(layout?.bottom, elements.bottomBarLeft, elements.bottomBarRight);
+  updateClock();
+}
+
+function renderBar(bar, leftRegion, rightRegion) {
+  if (!leftRegion || !rightRegion) {
+    return;
+  }
+  const barElement = leftRegion.parentElement;
+  if (barElement) {
+    barElement.dataset.hasBookmarks = bar?.left === "bookmarks" || bar?.right === "bookmarks" ? "true" : "false";
+  }
+  configureBarRegion(leftRegion, bar?.left);
+  configureBarRegion(rightRegion, bar?.right);
+}
+
+function configureBarRegion(region, componentName) {
+  region.style.removeProperty("flex-basis");
+  region.style.removeProperty("max-width");
+  region.hidden = !componentName || componentName === "none";
+  region.dataset.component = componentName || "none";
+  const component = barComponents[componentName];
+  if (component) {
+    region.appendChild(component);
+  }
+}
+
+function isBarComponentVisible(componentName) {
+  const component = barComponents[componentName];
+  const region = component?.parentElement;
+  const bar = region?.parentElement;
+  return Boolean(region?.classList.contains("bar-region") && !region.hidden && bar && !bar.hidden);
+}
+
+function updateClock() {
+  if (document.hidden) {
+    return;
+  }
+  const now = new Date();
+  if (elements.barDate) {
+    const label = formatBarDate(now, state.settings?.dateFormat);
+    elements.barDate.textContent = label;
+    elements.barDate.dateTime = now.toISOString();
+    elements.barDate.title = label ? `Current date: ${label}` : "Current date";
+  }
+  if (elements.barTime) {
+    const label = formatBarTime(now, state.settings?.timeFormat);
+    elements.barTime.textContent = label;
+    elements.barTime.dateTime = now.toISOString();
+    elements.barTime.title = label ? `Current time: ${label}` : "Current time";
+  }
+  if (elements.barDateTime) {
+    const dateLabel = formatBarDate(now, state.settings?.dateFormat);
+    const timeLabel = formatBarTime(now, state.settings?.timeFormat);
+    const label = [dateLabel, timeLabel].filter(Boolean).join(" ");
+    elements.barDateTime.textContent = label;
+    elements.barDateTime.dateTime = now.toISOString();
+    elements.barDateTime.title = label ? `Current date and time: ${label}` : "Current date and time";
   }
 }
 
@@ -342,7 +432,7 @@ async function renderBookmarks() {
   strip.classList.remove("scrolling");
   strip.classList.remove("has-overflow");
   strip.dataset.hasOverflow = "false";
-  if (!state.settings?.showHeader) {
+  if (!isBarComponentVisible("bookmarks")) {
     return;
   }
   if (!bookmarks) {
@@ -816,16 +906,11 @@ function triggerCacheRefresh(reason = "manual") {
         summary = await refreshCache();
       }
 
-      const fetchedAt = summary?.fetchedAt || Date.now();
-      const blockCount = summary?.blockCount ?? state.cacheMeta.blockCount ?? 0;
-      state.cacheMeta = {
-        ...state.cacheMeta,
-        state: CACHE_STATE.idle,
-        lastError: null,
-        lastUpdated: fetchedAt,
-        blockCount,
-      };
-      updateCacheStatus();
+      if (summary?.cacheVersion !== CACHE_VERSION) {
+        summary = await refreshCache();
+      }
+
+      await applyCacheRefreshResult(summary);
       return true;
     } catch (error) {
       const message = error?.message || "";
@@ -833,14 +918,7 @@ function triggerCacheRefresh(reason = "manual") {
       if (/receiving end|message port closed|did not return a result/i.test(message)) {
         try {
           const summary = await refreshCache();
-          state.cacheMeta = {
-            ...state.cacheMeta,
-            state: CACHE_STATE.idle,
-            lastError: null,
-            lastUpdated: summary?.fetchedAt || Date.now(),
-            blockCount: summary?.blockCount ?? state.cacheMeta.blockCount ?? 0,
-          };
-          updateCacheStatus();
+          await applyCacheRefreshResult(summary);
           return true;
         } catch (fallbackError) {
           state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: fallbackError.message };
@@ -859,16 +937,37 @@ function triggerCacheRefresh(reason = "manual") {
   return cacheRefreshPromise;
 }
 
+async function applyCacheRefreshResult(summary) {
+  const { cache, meta } = await getCache();
+  state.cache = cache;
+  state.cacheMeta = {
+    ...state.cacheMeta,
+    ...meta,
+    state: CACHE_STATE.idle,
+    lastError: null,
+    lastUpdated: summary?.fetchedAt || meta.lastUpdated || Date.now(),
+    blockCount: cache.blockIds.length,
+  };
+  // A background refresh updates the source pool, not the selection already on screen.
+  // Repaint only when the view has no usable block selection yet.
+  if (needsCacheSelection()) {
+    renderBlocks();
+  }
+  updateCacheStatus();
+}
+
 function getCacheSourceCounts() {
   const cache = state.cache || {};
   const sources = cache.sources || {};
   const blockCount = cache.blockIds?.length ?? state.cacheMeta.blockCount ?? 0;
   const channelCount = Array.isArray(sources.channels) ? sources.channels.length : Array.isArray(state.settings?.channelSlugs) ? state.settings.channelSlugs.length : 0;
   const blockIdCount = Array.isArray(sources.blockIds) ? sources.blockIds.length : Array.isArray(state.settings?.blockIds) ? state.settings.blockIds.length : 0;
+  const includesFeed = Boolean(sources.feed ?? state.settings?.includeFeed);
   return {
     blockCount,
     channelCount,
     blockIdCount,
+    includesFeed,
   };
 }
 
@@ -881,7 +980,7 @@ function updateCacheSummaryTooltip() {
   if (!button) {
     return;
   }
-  const { blockCount, channelCount, blockIdCount } = getCacheSourceCounts();
+  const { blockCount, channelCount, blockIdCount, includesFeed } = getCacheSourceCounts();
   const timestamp = state.cacheMeta.lastUpdated || state.cache?.fetchedAt;
   const relativeTime = timestamp ? formatRelativeTime(timestamp) : null;
 
@@ -893,7 +992,8 @@ function updateCacheSummaryTooltip() {
     }
     tooltip += "\nClick to refresh cache.";
   } else {
-    tooltip = `Randomly picked from ${formatCount(blockCount, "block")}, sourced from ${formatCount(channelCount, "channel")} and ${formatCount(blockIdCount, "specific block", "specific blocks")}.`;
+    const feedLabel = includesFeed ? " plus your Are.na feed" : "";
+    tooltip = `Randomly picked from ${formatCount(blockCount, "block")}, sourced from ${formatCount(channelCount, "channel")} and ${formatCount(blockIdCount, "specific block", "specific blocks")}${feedLabel}.`;
     if (relativeTime) {
       tooltip += `\nLast refresh: ${relativeTime}`;
     }
@@ -1029,6 +1129,12 @@ function applyBookmarkOverflow() {
   }
 }
 
+function needsCacheSelection() {
+  return !state.currentBlocks.length ||
+    !elements.blocksContainer?.childElementCount ||
+    elements.blocksContainer.classList.contains("is-empty");
+}
+
 function renderBlocks() {
   const container = elements.blocksContainer;
   if (!container) {
@@ -1072,12 +1178,14 @@ function renderLayout(blocks) {
 
   container.classList.remove("is-empty");
   container.innerHTML = "";
+  contentArea.classList.remove("is-scroll-y", "is-scroll-x");
+  contentArea.style.overflowX = "hidden";
+  contentArea.style.overflowY = "hidden";
 
   const viewport = getViewport();
-  const { tileSize, layout } = determineLayout(blocks.length, viewport);
-
-  container.style.setProperty("--tile-size", `${tileSize}px`);
   container.style.setProperty("--tile-gap", `${TILE_GAP}px`);
+  const { tileSize, layout } = determineLayout(blocks.length, viewport);
+  container.style.setProperty("--tile-size", `${tileSize}px`);
   const isCompact = tileSize <= TILE_SIZE_MAP.s;
   container.style.setProperty("--block-title-size", isCompact ? "0.9rem" : "1rem");
   container.style.setProperty("--block-meta-size", isCompact ? "0.6rem" : "0.7rem");
@@ -1087,7 +1195,7 @@ function renderLayout(blocks) {
     const row = document.createElement("div");
     row.className = "block-row";
     row.dataset.columns = String(columns);
-    for (let i = 0; i < columns && index < blocks.length; i += 1) {
+    for (let column = 0; column < columns && index < blocks.length; column += 1) {
       row.appendChild(renderBlockCard(blocks[index]));
       index += 1;
     }
@@ -1103,7 +1211,7 @@ function renderLayout(blocks) {
     index += 1;
   }
 
-  requestAnimationFrame(() => applyOverflowStates(layout));
+  requestAnimationFrame(() => applyOverflowStates());
   updateCacheStatus();
 }
 
@@ -1320,44 +1428,70 @@ function populateCard(article, block) {
   const main = article.querySelector("[data-main]");
   const titleEl = article.querySelector(".block-title");
   const descriptionEl = article.querySelector(".block-description");
-  const dateEl = article.querySelector(".block-date");
-  const typeEl = article.querySelector(".block-type");
-  const linkEl = article.querySelector(".block-link");
+  const metaRow = article.querySelector("[data-meta]");
+  const enabledFields = new Set(state.settings?.blockMetaFields || []);
 
   if (main) {
     buildMainContent(main, block);
   }
 
   if (titleEl) {
-    titleEl.textContent = block.title || `Block ${block.id}`;
+    const title = `${block.title || `Block ${block.id}`}`.trim();
+    titleEl.textContent = title;
+    titleEl.title = title;
+    titleEl.hidden = !enabledFields.has("title") || !title;
   }
 
   if (descriptionEl) {
     const text = block.descriptionText?.trim();
-    if (text) {
+    if (enabledFields.has("description") && text) {
       descriptionEl.textContent = text;
+      descriptionEl.title = text;
+      descriptionEl.hidden = false;
       descriptionEl.classList.remove("is-empty");
     } else {
       descriptionEl.textContent = "";
+      descriptionEl.removeAttribute("title");
+      descriptionEl.hidden = true;
       descriptionEl.classList.add("is-empty");
     }
   }
 
-  if (dateEl) {
-    dateEl.textContent = formatExactDate(block.createdAt) || "";
+  if (metaRow) {
+    renderBlockMeta(metaRow, block);
   }
 
-  if (typeEl) {
-    typeEl.textContent = block.kind || "Block";
-  }
+  const infoVisible = Boolean(
+    (titleEl && !titleEl.hidden) ||
+    (descriptionEl && !descriptionEl.hidden) ||
+    (metaRow && !metaRow.hidden)
+  );
+  article.querySelector(".block-info")?.toggleAttribute("hidden", !infoVisible);
+  article.classList.toggle("block-card--no-info", !infoVisible);
+}
 
-  if (linkEl) {
-    linkEl.href = block.arenaUrl || `https://www.are.na/block/${block.id}`;
-    linkEl.textContent = `#${block.id}`;
-    linkEl.title = block.kind === "Channel"
-      ? `${block.title || "Channel"}, click to view on Are.na`
-      : `Block ID ${block.id}, click to view on Are.na`;
-  }
+function renderBlockMeta(container, block) {
+  container.innerHTML = "";
+  const items = getBlockMetaItems(block, state.settings?.blockMetaFields);
+  items.forEach((item) => {
+    const wrapper = document.createElement("span");
+    wrapper.className = "block-meta-item";
+    const label = document.createElement("span");
+    label.className = "block-meta-label";
+    label.textContent = `${item.label}:`;
+    const value = item.href ? document.createElement("a") : document.createElement("span");
+    value.className = "block-meta-value";
+    value.textContent = item.value;
+    value.title = item.fullValue;
+    if (item.href) {
+      value.href = item.href;
+      value.target = "_blank";
+      value.rel = "noopener";
+    }
+    wrapper.append(label, value);
+    container.appendChild(wrapper);
+  });
+  container.hidden = !items.length;
 }
 
 function buildFallbackCard(block) {
@@ -1382,21 +1516,7 @@ function buildFallbackCard(block) {
 
   const metaRow = document.createElement("div");
   metaRow.className = "block-meta-row";
-
-  const dateEl = document.createElement("span");
-  dateEl.className = "block-date";
-  metaRow.appendChild(dateEl);
-
-  const linkEl = document.createElement("a");
-  linkEl.className = "block-link";
-  linkEl.target = "_blank";
-  linkEl.rel = "noopener";
-  linkEl.textContent = "#block";
-  metaRow.appendChild(linkEl);
-
-  const typeEl = document.createElement("span");
-  typeEl.className = "block-type";
-  metaRow.appendChild(typeEl);
+  metaRow.dataset.meta = "";
 
   info.appendChild(metaRow);
   article.appendChild(info);
@@ -1545,7 +1665,7 @@ function updateCacheStatus() {
       label.textContent = sanitizeErrorLabel(state.cacheMeta.lastError);
       break;
     default: {
-      const blockCount = state.cacheMeta.blockCount ?? state.cache?.blockIds?.length ?? 0;
+      const blockCount = state.cache?.blockIds?.length ?? state.cacheMeta.blockCount ?? 0;
       if (blockCount) {
         label.textContent = `${blockCount} block${blockCount === 1 ? "" : "s"}`;
       } else {
@@ -1577,7 +1697,7 @@ function handleStorageChange(changes, area) {
     getCache().then(({ cache, meta }) => {
       state.cache = cache;
       state.cacheMeta = { ...state.cacheMeta, ...meta };
-      if (!state.currentBlocks.length || !elements.blocksContainer?.childElementCount || elements.blocksContainer.classList.contains("is-empty")) {
+      if (!cache.blockIds.length || needsCacheSelection()) {
         renderBlocks();
       }
       updateCacheStatus();

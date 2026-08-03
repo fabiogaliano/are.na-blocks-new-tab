@@ -99,3 +99,24 @@ export const fetchArenaChannelContentsPage = (id, { page = 1, per = 100, sort = 
 
 export const fetchArenaBlock = (id, options = {}) =>
     fetchArenaJson(`/blocks/${encodeURIComponent(id)}`, options);
+
+export const fetchArenaMe = (options = {}) =>
+    fetchArenaJson("/me", options);
+
+export const fetchArenaFeedPage = ({ limit = 100, next, prev, ...options } = {}) =>
+    fetchArenaJson(
+        `/me/feed${buildQuery({ limit, next, prev })}`,
+        options
+    );
+
+export const fetchArenaUserContentsPage = (id, { page = 1, per = 100, sort = "updated_at_desc", type, ...options } = {}) =>
+    fetchArenaJson(
+        `/users/${encodeURIComponent(id)}/contents${buildQuery({ page, per, sort, type })}`,
+        options
+    );
+
+export const fetchArenaUserFollowingPage = (id, { page = 1, per = 100, sort = "created_at_desc", type, ...options } = {}) =>
+    fetchArenaJson(
+        `/users/${encodeURIComponent(id)}/following${buildQuery({ page, per, sort, type })}`,
+        options
+    );

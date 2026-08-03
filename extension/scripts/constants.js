@@ -2,7 +2,46 @@ export const STORAGE_KEYS = {
     settings: "settings",
     cache: "blockCache",
     cacheMeta: "blockCacheMeta",
-    bootstrap: "bootstrapState"
+    bootstrap: "bootstrapState",
+    arenaAuth: "arenaAuth"
+};
+
+export const BAR_COMPONENTS = ["none", "bookmarks", "cache", "settings", "date", "time", "dateTime"];
+
+export const BLOCK_META_FIELDS = [
+    "title",
+    "description",
+    "createdAt",
+    "updatedAt",
+    "blockId",
+    "type",
+    "author",
+    "sourceChannel",
+    "source",
+    "comments",
+    "visibility",
+    "state",
+    "connectedBy",
+    "connectedAt",
+    "position",
+    "pinned",
+    "itemCount",
+    "attachment",
+    "customMetadata"
+];
+
+export const DATE_FORMATS = ["system", "short", "long", "iso"];
+export const TIME_FORMATS = ["system", "12-hour", "24-hour", "12-hour-seconds", "24-hour-seconds"];
+
+export const DEFAULT_BAR_LAYOUT = {
+    top: {
+        left: "bookmarks",
+        right: "none"
+    },
+    bottom: {
+        left: "cache",
+        right: "settings"
+    }
 };
 
 export const DEFAULT_SETTINGS = {
@@ -13,10 +52,16 @@ export const DEFAULT_SETTINGS = {
     showFooter: true,
     filters: ["Image", "Text"],
     theme: "system",
-    tileSize: "auto"
+    tileSize: "auto",
+    includeFeed: false,
+    accountChannelSlugs: [],
+    barLayout: DEFAULT_BAR_LAYOUT,
+    dateFormat: "system",
+    timeFormat: "system",
+    blockMetaFields: ["title", "description", "createdAt", "blockId", "type"]
 };
 
-export const CACHE_VERSION = 2;
+export const CACHE_VERSION = 3;
 
 export const ARENA_API_ROOT = "https://api.are.na/v3";
 
