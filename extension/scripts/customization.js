@@ -1,42 +1,10 @@
 import {
-    BAR_COMPONENTS,
     BLOCK_META_FIELDS,
-    DATE_FORMATS,
-    DEFAULT_BAR_LAYOUT,
-    DEFAULT_SETTINGS,
-    TIME_FORMATS
+    DEFAULT_SETTINGS
 } from "./constants.js";
 
-const BAR_NAMES = ["top", "bottom"];
-const SLOT_NAMES = ["left", "right"];
 const MAX_META_LENGTH = 320;
 const MAX_META_FULL_LENGTH = 2000;
-
-export const normalizeBarLayout = (value) => {
-    const normalized = {};
-    const usedComponents = new Set();
-
-    BAR_NAMES.forEach((barName) => {
-        const source = value?.[barName] || {};
-        const fallback = DEFAULT_BAR_LAYOUT[barName];
-        normalized[barName] = {
-            left: "none",
-            right: "none"
-        };
-
-        SLOT_NAMES.forEach((slotName) => {
-            const requested = BAR_COMPONENTS.includes(source[slotName]) ? source[slotName] : fallback[slotName];
-            if (requested === "none" || usedComponents.has(requested)) {
-                normalized[barName][slotName] = "none";
-                return;
-            }
-            normalized[barName][slotName] = requested;
-            usedComponents.add(requested);
-        });
-    });
-
-    return normalized;
-};
 
 export const normalizeBlockMetaFields = (value) => {
     if (!Array.isArray(value)) {
@@ -45,60 +13,6 @@ export const normalizeBlockMetaFields = (value) => {
     return [...new Set(value.filter(field => BLOCK_META_FIELDS.includes(field)))];
 };
 
-export const normalizeDateFormat = (value) => DATE_FORMATS.includes(value) ? value : DEFAULT_SETTINGS.dateFormat;
-
-export const normalizeTimeFormat = (value) => TIME_FORMATS.includes(value) ? value : DEFAULT_SETTINGS.timeFormat;
-
-export const hasVisibleSettingsButton = ({ barLayout, showHeader = true, showFooter = true }) => {
-    const layout = normalizeBarLayout(barLayout);
-    return BAR_NAMES.some((barName) => {
-        const barVisible = barName === "top" ? showHeader : showFooter;
-        if (!barVisible) {
-            return false;
-        }
-        const bar = layout[barName];
-        return bar.left === "settings" || bar.right === "settings";
-    });
-};
-
-export const formatBarDate = (value, format = "system") => {
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) {
-        return "";
-    }
-    switch (normalizeDateFormat(format)) {
-        case "iso":
-            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-        case "short":
-            return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-        case "long":
-            return new Intl.DateTimeFormat(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" }).format(date);
-        case "system":
-        default:
-            return new Intl.DateTimeFormat().format(date);
-    }
-};
-
-export const formatBarTime = (value, format = "system") => {
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) {
-        return "";
-    }
-    const normalized = normalizeTimeFormat(format);
-    const options = {
-        hour: "numeric",
-        minute: "2-digit"
-    };
-    if (normalized.includes("seconds")) {
-        options.second = "2-digit";
-    }
-    if (normalized.startsWith("12-hour")) {
-        options.hour12 = true;
-    } else if (normalized.startsWith("24-hour")) {
-        options.hour12 = false;
-    }
-    return new Intl.DateTimeFormat(undefined, options).format(date);
-};
 
 export const getBlockMetaItems = (block, enabledFields) => {
     const enabled = new Set(normalizeBlockMetaFields(enabledFields));
@@ -259,5 +173,3 @@ const serializeValue = (value) => {
 const humanizeKey = (value) => `${value}`
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, letter => letter.toUpperCase());
-
-const pad = (value) => `${value}`.padStart(2, "0");

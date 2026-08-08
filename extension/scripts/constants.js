@@ -74,9 +74,7 @@ export const CACHE_STATE = {
 };
 
 export const MESSAGES = {
-    refreshCache: "arena-cache-refresh",
-    cacheStatus: "arena-cache-status",
-    themeChanged: "arena-theme-changed"
+    refreshCache: "arena-cache-refresh"
 };
 
 export const TILE_SIZE_OPTIONS = ["auto", "xs", "s", "m", "l", "xl"];

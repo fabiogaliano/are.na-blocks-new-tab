@@ -1,28 +1,19 @@
-import { CACHE_STATE, CACHE_VERSION, MESSAGES, STORAGE_KEYS, TILE_SIZE_OPTIONS } from "./constants.js";
+import { CACHE_STATE, STORAGE_KEYS } from "./constants.js";
 import { formatRelativeTime } from "./time.js";
 import { bookmarks, runtime, storage } from "./extension-api.js";
 import { chooseRandomBlocks } from "./arena.js";
-import { getCache, getSettings } from "./storage.js";
+import { getSettings } from "./storage.js";
 import { applyTheme } from "./theme.js";
-import { refreshCache } from "./cache-refresh.js";
-import { formatBarDate, formatBarTime, getBlockMetaItems } from "./customization.js";
+import { runtimeCacheLifecycle } from "./cache-refresh.js";
+import { getBlockMetaItems } from "./customization.js";
+import { createBarRenderer } from "./bar-customization.js";
+import { createBlockLayout } from "./block-layout.js";
+import { classifySettingsChanges } from "./settings-model.js";
 
-const TILE_SIZE_MAP = {
-  xs: 225,
-  s: 260,
-  m: 310,
-  l: 360,
-  xl: 420,
-};
-
-const AUTO_TILE_SIZES = [420, 360, 320, 300, 260, 225];
-const TILE_GAP = 18;
-const INFO_HEIGHT = 0;
 const RESIZE_DEBOUNCE = 150;
 const BOOKMARK_MENU_OFFSET = 4;
 const BOOKMARK_SUBMENU_OFFSET = 6;
 const BOOKMARK_OVERFLOW_TOLERANCE = 2;
-const CACHE_STALE_THRESHOLD = 60 * 60 * 1000;
 const USER_AGENT = typeof navigator === "object" && typeof navigator.userAgent === "string" ? navigator.userAgent.toLowerCase() : "";
 const IS_FIREFOX = USER_AGENT.includes("firefox");
 const IS_CHROMIUM = !IS_FIREFOX && /chrome|chromium|crios|edg|opr|vivaldi/.test(USER_AGENT);
@@ -89,7 +80,6 @@ const state = {
     blockCount: 0,
   },
   currentBlocks: [],
-  bootstrapAttempted: false,
 };
 
 const elements = {
@@ -114,10 +104,8 @@ const elements = {
 };
 
 let resizeTimer = null;
-let clockTimer = null;
 let bookmarkResizeObserver = null;
 const openBookmarkFolders = new Set();
-let cacheRefreshPromise = null;
 
 const barComponents = {
   bookmarks: elements.bookmarkStrip,
@@ -127,6 +115,27 @@ const barComponents = {
   time: elements.barTime,
   dateTime: elements.barDateTime,
 };
+
+const barView = createBarRenderer({
+  header: elements.header,
+  footer: elements.footer,
+  pool: elements.barComponentPool,
+  regions: {
+    top: { left: elements.topBarLeft, right: elements.topBarRight },
+    bottom: { left: elements.bottomBarLeft, right: elements.bottomBarRight },
+  },
+  components: barComponents,
+  dateElement: elements.barDate,
+  timeElement: elements.barTime,
+  dateTimeElement: elements.barDateTime,
+  beforeRender: closeAllBookmarkFolders,
+});
+
+const renderBlockLayout = createBlockLayout({
+  container: elements.blocksContainer,
+  contentArea: elements.contentArea,
+  renderCard: renderBlockCard,
+});
 
 const setMenuLayerActive = (isActive) => {
   const layer = elements.bookmarkMenuLayer;
@@ -213,8 +222,7 @@ async function init() {
     wireEvents();
     await renderAll();
     setPageBootState("ready");
-    await maybeBootstrapCache();
-    await maybeRefreshStaleCache();
+    await ensureCacheReady();
   } catch (error) {
     console.error("Failed to initialise new tab", error);
     renderError(error);
@@ -223,96 +231,38 @@ async function init() {
 }
 
 async function hydrateState() {
-  const { cache, meta } = await getCache();
+  const [{ cache, meta }, settings] = await Promise.all([
+    runtimeCacheLifecycle.read(),
+    getSettings(),
+  ]);
   state.cache = cache;
   state.cacheMeta = { ...state.cacheMeta, ...meta };
-  state.settings = await getSettings();
+  state.settings = settings;
   applyTheme(state.settings.theme);
   toggleRegions();
 }
 
-async function maybeBootstrapCache() {
-  if (state.bootstrapAttempted) {
-    return;
-  }
-  state.bootstrapAttempted = true;
-
-  if (!storage?.get || !runtime?.sendMessage) {
-    return;
-  }
-
-  if (state.cache?.blockIds?.length) {
-    try {
-      await storage.set({
-        [STORAGE_KEYS.bootstrap]: {
-          status: "complete",
-          cacheVersion: CACHE_VERSION,
-          timestamp: Date.now(),
-        },
-      });
-    } catch (_) {
-      // ignore
-    }
-    return;
-  }
-
+async function ensureCacheReady() {
   try {
-    await storage.set({
-      [STORAGE_KEYS.bootstrap]: {
-        status: "pending",
-        cacheVersion: CACHE_VERSION,
-        timestamp: Date.now(),
-      },
-    });
-
-    const success = await triggerCacheRefresh("bootstrap");
-    if (success) {
-      await storage.set({
-        [STORAGE_KEYS.bootstrap]: {
-          status: "complete",
-          cacheVersion: CACHE_VERSION,
-          timestamp: Date.now(),
-        },
-      });
-    } else {
-      await storage.set({
-        [STORAGE_KEYS.bootstrap]: {
-          status: "error",
-          cacheVersion: CACHE_VERSION,
-          timestamp: Date.now(),
-        },
-      });
-    }
+    applyCacheSnapshot(await runtimeCacheLifecycle.ensureReady());
   } catch (error) {
     console.warn("Bootstrap cache request failed", error);
     try {
-      await storage.remove([STORAGE_KEYS.bootstrap]);
+      applyCacheSnapshot(await runtimeCacheLifecycle.read());
+      if (state.cacheMeta.state !== CACHE_STATE.error) {
+        state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: error.message };
+        updateCacheStatus();
+      }
     } catch (_) {
-      // ignore cleanup errors
+      state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: error.message };
+      updateCacheStatus();
     }
   }
-}
-
-async function maybeRefreshStaleCache() {
-  if (state.cacheMeta.state === CACHE_STATE.working || cacheRefreshPromise) {
-    return;
-  }
-  const timestamp = state.cacheMeta.lastUpdated || state.cache?.fetchedAt || 0;
-  if (!timestamp) {
-    return;
-  }
-  if (Date.now() - timestamp < CACHE_STALE_THRESHOLD) {
-    return;
-  }
-  await triggerCacheRefresh("stale");
 }
 
 function wireEvents() {
   if (storage?.onChanged) {
     storage.onChanged.addListener(handleStorageChange);
-  }
-  if (runtime?.onMessage) {
-    runtime.onMessage.addListener(handleRuntimeMessage);
   }
   window.addEventListener("resize", handleResize, { passive: true });
   window.addEventListener("scroll", handleScroll, { passive: true });
@@ -328,9 +278,7 @@ function wireEvents() {
   elements.cacheButton?.addEventListener("click", handleCacheButtonClick);
   document.addEventListener("pointerdown", handleDocumentPointerDown, true);
   document.addEventListener("keydown", handleDocumentKeyDown);
-  document.addEventListener("visibilitychange", updateClock);
-  clearInterval(clockTimer);
-  clockTimer = setInterval(updateClock, 1000);
+  document.addEventListener("visibilitychange", () => barView.render());
 }
 
 async function renderAll() {
@@ -340,81 +288,7 @@ async function renderAll() {
 }
 
 function toggleRegions() {
-  const showHeader = state.settings?.showHeader !== false;
-  const showFooter = state.settings?.showFooter !== false;
-  const layout = state.settings?.barLayout;
-  closeAllBookmarkFolders();
-  Object.values(barComponents).forEach((component) => {
-    if (component && elements.barComponentPool) {
-      elements.barComponentPool.appendChild(component);
-    }
-  });
-  if (elements.header) {
-    elements.header.hidden = !showHeader;
-  }
-  if (elements.footer) {
-    elements.footer.hidden = !showFooter;
-  }
-  renderBar(layout?.top, elements.topBarLeft, elements.topBarRight);
-  renderBar(layout?.bottom, elements.bottomBarLeft, elements.bottomBarRight);
-  updateClock();
-}
-
-function renderBar(bar, leftRegion, rightRegion) {
-  if (!leftRegion || !rightRegion) {
-    return;
-  }
-  const barElement = leftRegion.parentElement;
-  if (barElement) {
-    barElement.dataset.hasBookmarks = bar?.left === "bookmarks" || bar?.right === "bookmarks" ? "true" : "false";
-  }
-  configureBarRegion(leftRegion, bar?.left);
-  configureBarRegion(rightRegion, bar?.right);
-}
-
-function configureBarRegion(region, componentName) {
-  region.style.removeProperty("flex-basis");
-  region.style.removeProperty("max-width");
-  region.hidden = !componentName || componentName === "none";
-  region.dataset.component = componentName || "none";
-  const component = barComponents[componentName];
-  if (component) {
-    region.appendChild(component);
-  }
-}
-
-function isBarComponentVisible(componentName) {
-  const component = barComponents[componentName];
-  const region = component?.parentElement;
-  const bar = region?.parentElement;
-  return Boolean(region?.classList.contains("bar-region") && !region.hidden && bar && !bar.hidden);
-}
-
-function updateClock() {
-  if (document.hidden) {
-    return;
-  }
-  const now = new Date();
-  if (elements.barDate) {
-    const label = formatBarDate(now, state.settings?.dateFormat);
-    elements.barDate.textContent = label;
-    elements.barDate.dateTime = now.toISOString();
-    elements.barDate.title = label ? `Current date: ${label}` : "Current date";
-  }
-  if (elements.barTime) {
-    const label = formatBarTime(now, state.settings?.timeFormat);
-    elements.barTime.textContent = label;
-    elements.barTime.dateTime = now.toISOString();
-    elements.barTime.title = label ? `Current time: ${label}` : "Current time";
-  }
-  if (elements.barDateTime) {
-    const dateLabel = formatBarDate(now, state.settings?.dateFormat);
-    const timeLabel = formatBarTime(now, state.settings?.timeFormat);
-    const label = [dateLabel, timeLabel].filter(Boolean).join(" ");
-    elements.barDateTime.textContent = label;
-    elements.barDateTime.dateTime = now.toISOString();
-    elements.barDateTime.title = label ? `Current date and time: ${label}` : "Current date and time";
-  }
+  barView.render(state.settings);
 }
 
 async function renderBookmarks() {
@@ -432,7 +306,7 @@ async function renderBookmarks() {
   strip.classList.remove("scrolling");
   strip.classList.remove("has-overflow");
   strip.dataset.hasOverflow = "false";
-  if (!isBarComponentVisible("bookmarks")) {
+  if (!barView.isVisible("bookmarks")) {
     return;
   }
   if (!bookmarks) {
@@ -879,73 +753,33 @@ function handleCacheButtonClick(event) {
   triggerCacheRefresh("manual");
 }
 
-function triggerCacheRefresh(reason = "manual") {
-  if (cacheRefreshPromise) {
-    return cacheRefreshPromise;
-  }
+async function triggerCacheRefresh(reason = "manual") {
   state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.working, lastError: null };
   updateCacheStatus();
-  cacheRefreshPromise = (async () => {
+  try {
+    await runtimeCacheLifecycle.refresh({ reason });
+    applyCacheSnapshot(await runtimeCacheLifecycle.read());
+    return true;
+  } catch (error) {
     try {
-      let summary = null;
-
-      if (runtime?.sendMessage) {
-        const response = await runtime.sendMessage({
-          type: MESSAGES.refreshCache,
-          payload: { reason },
-        });
-
-        if (response?.ok) {
-          summary = response.summary || null;
-        } else if (response?.error) {
-          throw new Error(response.error);
-        } else {
-          throw new Error("Cache refresh did not return a result.");
-        }
-      } else {
-        summary = await refreshCache();
+      applyCacheSnapshot(await runtimeCacheLifecycle.read());
+      if (state.cacheMeta.state !== CACHE_STATE.error) {
+        state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: error.message };
+        updateCacheStatus();
       }
-
-      if (summary?.cacheVersion !== CACHE_VERSION) {
-        summary = await refreshCache();
-      }
-
-      await applyCacheRefreshResult(summary);
-      return true;
-    } catch (error) {
-      const message = error?.message || "";
-
-      if (/receiving end|message port closed|did not return a result/i.test(message)) {
-        try {
-          const summary = await refreshCache();
-          await applyCacheRefreshResult(summary);
-          return true;
-        } catch (fallbackError) {
-          state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: fallbackError.message };
-          updateCacheStatus();
-          return false;
-        }
-      }
-
+    } catch (_) {
       state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: error.message };
       updateCacheStatus();
-      return false;
-    } finally {
-      cacheRefreshPromise = null;
     }
-  })();
-  return cacheRefreshPromise;
+    return false;
+  }
 }
 
-async function applyCacheRefreshResult(summary) {
-  const { cache, meta } = await getCache();
+function applyCacheSnapshot({ cache, meta }) {
   state.cache = cache;
   state.cacheMeta = {
     ...state.cacheMeta,
     ...meta,
-    state: CACHE_STATE.idle,
-    lastError: null,
-    lastUpdated: summary?.fetchedAt || meta.lastUpdated || Date.now(),
     blockCount: cache.blockIds.length,
   };
   // A background refresh updates the source pool, not the selection already on screen.
@@ -953,6 +787,17 @@ async function applyCacheRefreshResult(summary) {
   if (needsCacheSelection()) {
     renderBlocks();
   }
+  updateCacheStatus();
+}
+
+function applyCacheMeta(meta) {
+  state.cacheMeta = {
+    ...state.cacheMeta,
+    ...(meta || {}),
+    blockCount: Number.isFinite(meta?.blockCount)
+      ? meta.blockCount
+      : state.cache?.blockIds?.length ?? state.cacheMeta.blockCount ?? 0,
+  };
   updateCacheStatus();
 }
 
@@ -1176,215 +1021,8 @@ function renderLayout(blocks) {
     return;
   }
 
-  container.classList.remove("is-empty");
-  container.innerHTML = "";
-  contentArea.classList.remove("is-scroll-y", "is-scroll-x");
-  contentArea.style.overflowX = "hidden";
-  contentArea.style.overflowY = "hidden";
-
-  const viewport = getViewport();
-  container.style.setProperty("--tile-gap", `${TILE_GAP}px`);
-  const { tileSize, layout } = determineLayout(blocks.length, viewport);
-  container.style.setProperty("--tile-size", `${tileSize}px`);
-  const isCompact = tileSize <= TILE_SIZE_MAP.s;
-  container.style.setProperty("--block-title-size", isCompact ? "0.9rem" : "1rem");
-  container.style.setProperty("--block-meta-size", isCompact ? "0.6rem" : "0.7rem");
-
-  let index = 0;
-  layout.rows.forEach((columns) => {
-    const row = document.createElement("div");
-    row.className = "block-row";
-    row.dataset.columns = String(columns);
-    for (let column = 0; column < columns && index < blocks.length; column += 1) {
-      row.appendChild(renderBlockCard(blocks[index]));
-      index += 1;
-    }
-    container.appendChild(row);
-  });
-
-  while (index < blocks.length) {
-    const fallbackRow = document.createElement("div");
-    fallbackRow.className = "block-row";
-    fallbackRow.dataset.columns = "1";
-    fallbackRow.appendChild(renderBlockCard(blocks[index]));
-    container.appendChild(fallbackRow);
-    index += 1;
-  }
-
-  requestAnimationFrame(() => applyOverflowStates());
+  renderBlockLayout(blocks, state.settings?.tileSize);
   updateCacheStatus();
-}
-
-function determineLayout(count, viewport) {
-  const requested = state.settings?.tileSize && TILE_SIZE_OPTIONS.includes(state.settings.tileSize) ? state.settings.tileSize : "auto";
-
-  if (requested !== "auto") {
-    const baseSize = TILE_SIZE_MAP[requested] || TILE_SIZE_MAP.m;
-    const tileSize = clampTileSize(baseSize, viewport);
-    const layout = chooseLayout(count, viewport, tileSize);
-    return { tileSize, layout };
-  }
-
-  for (const candidate of AUTO_TILE_SIZES) {
-    const tileSize = clampTileSize(candidate, viewport);
-    const layout = chooseLayout(count, viewport, tileSize);
-    if (layout.fitsWidth && layout.fitsHeight) {
-      return { tileSize, layout };
-    }
-  }
-
-  const fallbackSize = clampTileSize(AUTO_TILE_SIZES[AUTO_TILE_SIZES.length - 1], viewport);
-  return { tileSize: fallbackSize, layout: chooseLayout(count, viewport, fallbackSize) };
-}
-
-function chooseLayout(count, viewport, tileSize) {
-  if (count <= 0) {
-    return { rows: [], requiredWidth: 0, requiredHeight: 0, fitsWidth: true, fitsHeight: true };
-  }
-
-  const widthFor = (cols) => cols * tileSize + (cols - 1) * TILE_GAP;
-  const heightForRows = (rows) => rows * (tileSize + INFO_HEIGHT) + (rows - 1) * TILE_GAP;
-
-  const fitsColumns = (cols) => widthFor(cols) <= viewport.width;
-  const fitsRows = (rows) => heightForRows(rows) <= viewport.height;
-
-  const ratio = viewport.width / Math.max(viewport.height, 1);
-  const superThin = viewport.width < widthFor(2);
-  const superWide = viewport.height < heightForRows(2);
-
-  let rows;
-
-  switch (count) {
-    case 1:
-      rows = [1];
-      break;
-    case 2:
-      rows = ratio >= 1 && fitsColumns(2) ? [2] : [1, 1];
-      break;
-    case 3:
-      if (ratio >= 1 && fitsColumns(3)) {
-        rows = [3];
-      } else if (ratio >= 1 && fitsColumns(2)) {
-        rows = [2, 1];
-      } else {
-        rows = [1, 1, 1];
-      }
-      break;
-    case 4:
-      if (superThin) {
-        rows = [1, 1, 1, 1];
-      } else if (superWide && fitsColumns(4)) {
-        rows = [4];
-      } else if (fitsColumns(2) && fitsRows(2)) {
-        rows = [2, 2];
-      } else if (fitsColumns(2)) {
-        rows = [2, 1, 1];
-      } else {
-        rows = [1, 1, 1, 1];
-      }
-      break;
-    case 5:
-      if (superThin) {
-        rows = [1, 1, 1, 1, 1];
-      } else if (superWide && fitsColumns(5)) {
-        rows = [5];
-      } else if (fitsColumns(2) && !fitsColumns(3)) {
-        rows = [2, 2, 1];
-      } else if (fitsColumns(3) && fitsRows(2)) {
-        rows = [3, 2];
-      } else if (fitsColumns(3) && fitsRows(3)) {
-        rows = [2, 2, 1];
-      } else if (fitsColumns(2)) {
-        rows = [2, 2, 1];
-      } else {
-        rows = [1, 1, 1, 1, 1];
-      }
-      break;
-    case 6:
-      if (superThin) {
-        rows = [1, 1, 1, 1, 1, 1];
-      } else if (superWide && fitsColumns(6)) {
-        rows = [6];
-      } else {
-        const canThreeCols = fitsColumns(3);
-        const canTwoCols = fitsColumns(2);
-        const preferWide = ratio >= 1;
-        if (canThreeCols && preferWide && fitsRows(2)) {
-          rows = [3, 3];
-        } else if (canThreeCols && !canTwoCols && fitsRows(2)) {
-          rows = [3, 3];
-        } else if (canTwoCols && fitsRows(3)) {
-          rows = [2, 2, 2];
-        } else if (canThreeCols) {
-          rows = [3, 3];
-        } else if (canTwoCols) {
-          rows = [2, 2, 2];
-        } else {
-          rows = [1, 1, 1, 1, 1, 1];
-        }
-      }
-      break;
-    default:
-      rows = Array.from({ length: count }, () => 1);
-      break;
-  }
-
-  const rowWidths = rows.map((cols) => widthFor(cols));
-  const requiredWidth = Math.max(...rowWidths);
-  const requiredHeight = heightForRows(rows.length);
-
-  return {
-    rows,
-    requiredWidth,
-    requiredHeight,
-    fitsWidth: requiredWidth <= viewport.width,
-    fitsHeight: requiredHeight <= viewport.height,
-  };
-}
-
-function clampTileSize(size, viewport) {
-  const maxWidth = Math.max(120, viewport.width - 32);
-  const maxHeight = Math.max(120, viewport.height - INFO_HEIGHT - 48);
-  const limited = Math.min(size, maxWidth, maxHeight);
-  return Math.max(120, Math.floor(limited));
-}
-
-function getViewport() {
-  const area = elements.contentArea;
-  if (!area) {
-    return { width: window.innerWidth, height: window.innerHeight };
-  }
-  const width = area.clientWidth || window.innerWidth;
-  const height = area.clientHeight || window.innerHeight;
-  return { width, height };
-}
-
-function applyOverflowStates(layout) {
-  const contentArea = elements.contentArea;
-  const container = elements.blocksContainer;
-  if (!contentArea || !container) {
-    return;
-  }
-
-  const containerRect = container.getBoundingClientRect();
-  const areaHeight = contentArea.clientHeight;
-  const areaWidth = contentArea.clientWidth;
-
-  const verticalOverflow = containerRect.height > areaHeight + 1;
-  const horizontalOverflow = containerRect.width > areaWidth + 1;
-
-  contentArea.classList.toggle("is-scroll-y", verticalOverflow);
-  contentArea.classList.toggle("is-scroll-x", horizontalOverflow);
-
-  contentArea.style.overflowY = verticalOverflow ? "auto" : "hidden";
-  contentArea.style.overflowX = horizontalOverflow ? "auto" : "hidden";
-
-  if (!verticalOverflow) {
-    contentArea.scrollTop = 0;
-  }
-  if (!horizontalOverflow) {
-    contentArea.scrollLeft = 0;
-  }
 }
 
 function showEmptyState() {
@@ -1682,7 +1320,11 @@ function handleStorageChange(changes, area) {
   }
   if (changes[STORAGE_KEYS.settings]) {
     getSettings().then((settings) => {
+      const { displayChanged } = classifySettingsChanges(settings, state.settings);
       state.settings = settings;
+      if (!displayChanged) {
+        return;
+      }
       applyTheme(state.settings.theme);
       toggleRegions();
       if (state.currentBlocks.length) {
@@ -1693,24 +1335,13 @@ function handleStorageChange(changes, area) {
       renderBookmarks();
     });
   }
-  if (changes[STORAGE_KEYS.cache] || changes[STORAGE_KEYS.cacheMeta]) {
-    getCache().then(({ cache, meta }) => {
-      state.cache = cache;
-      state.cacheMeta = { ...state.cacheMeta, ...meta };
-      if (!cache.blockIds.length || needsCacheSelection()) {
-        renderBlocks();
-      }
-      updateCacheStatus();
-    });
+  if (changes[STORAGE_KEYS.cache]) {
+    runtimeCacheLifecycle.read().then(applyCacheSnapshot);
+  } else if (changes[STORAGE_KEYS.cacheMeta]?.newValue) {
+    applyCacheMeta(changes[STORAGE_KEYS.cacheMeta].newValue);
+  } else if (changes[STORAGE_KEYS.cacheMeta]) {
+    runtimeCacheLifecycle.read().then(applyCacheSnapshot);
   }
-}
-
-function handleRuntimeMessage(message) {
-  if (message?.type === MESSAGES.cacheStatus) {
-    state.cacheMeta = { ...state.cacheMeta, ...message.payload };
-    updateCacheStatus();
-  }
-  return false;
 }
 
 function handleResize() {

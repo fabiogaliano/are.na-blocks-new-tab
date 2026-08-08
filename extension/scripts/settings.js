@@ -1,26 +1,24 @@
-import { BLOCK_TYPES, CACHE_STATE, DEFAULT_SETTINGS, MESSAGES, STORAGE_KEYS, TILE_SIZE_OPTIONS } from "./constants.js";
-import { runtime, storage } from "./extension-api.js";
+import { BLOCK_TYPES, CACHE_STATE, DEFAULT_SETTINGS, STORAGE_KEYS, TILE_SIZE_OPTIONS } from "./constants.js";
+import { storage } from "./extension-api.js";
 import {
     clearArenaAuth,
     clearCache,
     getArenaAuth,
-    getCache,
     getSettings,
-    parseBlockIds,
-    parseChannelSlugs,
     saveArenaAuth,
     saveSettings
 } from "./storage.js";
 import { connectArenaAccount, loadArenaAccountCatalog } from "./arena-account.js";
-import { hasVisibleSettingsButton, normalizeBarLayout, normalizeBlockMetaFields } from "./customization.js";
+import { createBarEditor } from "./bar-customization.js";
+import { canonicalizeSettings, classifySettingsChanges } from "./settings-model.js";
 import { applyTheme } from "./theme.js";
 import { formatRelativeTime } from "./time.js";
-import { refreshCache } from "./cache-refresh.js";
+import { runtimeCacheLifecycle } from "./cache-refresh.js";
 
 const EMPTY_AUTH = { token: "", user: null };
 
 const state = {
-    settings: cloneSettings(DEFAULT_SETTINGS),
+    settings: canonicalizeSettings(),
     auth: { ...EMPTY_AUTH },
     cache: null,
     cacheMeta: {
@@ -95,6 +93,13 @@ const TILE_SIZE_LABEL_MAP = {
     xl: "Extra large"
 };
 
+const barEditor = createBarEditor({
+    selects: elements.barComponentSelects,
+    formatOptions: elements.barFormatOptions,
+    dateFormatField: elements.dateFormatField,
+    timeFormatField: elements.timeFormatField
+});
+
 const sanitizeErrorLabel = (message) => {
     if (!message || typeof message !== "string") {
         return "Error";
@@ -143,7 +148,11 @@ async function init() {
 }
 
 async function hydrateState() {
-    const [settings, auth, cacheState] = await Promise.all([getSettings(), getArenaAuth(), getCache()]);
+    const [settings, auth, cacheState] = await Promise.all([
+        getSettings(),
+        getArenaAuth(),
+        runtimeCacheLifecycle.read()
+    ]);
     state.settings = settings;
     state.auth = auth;
     state.cache = cacheState.cache;
@@ -187,11 +196,7 @@ function populateForm(settings = state.settings) {
     elements.themeRadios.forEach((radio) => {
         radio.checked = radio.value === settings.theme;
     });
-    const barLayout = normalizeBarLayout(settings.barLayout);
-    elements.barComponentSelects.forEach((select) => {
-        const [barName, slotName] = select.dataset.barSlot.split(".");
-        select.value = barLayout[barName][slotName];
-    });
+    barEditor.write(settings.barLayout);
     if (elements.dateFormat) {
         elements.dateFormat.value = settings.dateFormat;
     }
@@ -202,7 +207,6 @@ function populateForm(settings = state.settings) {
     elements.blockMetaFields.forEach((checkbox) => {
         checkbox.checked = selectedMetaFields.has(checkbox.value);
     });
-    updateBarFormatVisibility();
     updateSettingsAccessWarning();
 
     renderAccountCatalog(new Set(settings.accountChannelSlugs));
@@ -265,7 +269,6 @@ function wireEvents() {
     elements.ownedChannelPicker?.addEventListener("change", handleAccountChannelChange);
     elements.followedChannelPicker?.addEventListener("change", handleAccountChannelChange);
 
-    runtime?.onMessage?.addListener(handleRuntimeMessage);
     storage?.onChanged?.addListener(handleStorageChange);
 }
 
@@ -349,8 +352,8 @@ function getSelectedTheme() {
 function gatherSourceSettings() {
     const filters = Array.from(document.querySelectorAll("input[name='filters']:checked"), input => input.value);
     return {
-        channelSlugs: parseChannelSlugs(elements.channelSlugs?.value || ""),
-        blockIds: parseBlockIds(elements.blockIds?.value || ""),
+        channelSlugs: elements.channelSlugs?.value || "",
+        blockIds: elements.blockIds?.value || "",
         filters: filters.length ? filters : [...BLOCK_TYPES],
         includeFeed: Boolean(state.auth.token && elements.includeFeed?.checked),
         accountChannelSlugs: getSelectedAccountChannelSlugs()
@@ -370,26 +373,12 @@ function gatherDisplaySettings() {
         barLayout: gatherBarLayout(),
         dateFormat: elements.dateFormat?.value || DEFAULT_SETTINGS.dateFormat,
         timeFormat: elements.timeFormat?.value || DEFAULT_SETTINGS.timeFormat,
-        blockMetaFields: normalizeBlockMetaFields(blockMetaFields)
+        blockMetaFields
     };
 }
 
 function gatherBarLayout() {
-    const draft = {
-        top: {
-            left: "none",
-            right: "none"
-        },
-        bottom: {
-            left: "none",
-            right: "none"
-        }
-    };
-    elements.barComponentSelects.forEach((select) => {
-        const [barName, slotName] = select.dataset.barSlot.split(".");
-        draft[barName][slotName] = select.value;
-    });
-    return normalizeBarLayout(draft);
+    return barEditor.read();
 }
 
 const gatherFormSettings = () => ({
@@ -403,7 +392,7 @@ async function handleDisplaySave(event) {
         return;
     }
     const nextSettings = { ...state.settings, ...gatherDisplaySettings() };
-    if (settingsEqual(nextSettings, state.settings)) {
+    if (!classifySettingsChanges(nextSettings, state.settings).changed) {
         showStatus("Display settings are already saved.");
         return;
     }
@@ -423,7 +412,7 @@ async function handleDisplaySave(event) {
 
 function handleReset(event) {
     event.preventDefault();
-    populateForm(cloneSettings(DEFAULT_SETTINGS));
+    populateForm(canonicalizeSettings());
     updateTheme(DEFAULT_SETTINGS.theme);
     updateDirtyState();
     showStatus("Defaults loaded. Save to apply.");
@@ -435,14 +424,14 @@ async function handleSourcesSave(event) {
         return;
     }
     const nextSettings = { ...state.settings, ...gatherSourceSettings() };
-    const settingsChanged = !settingsEqual(nextSettings, state.settings);
+    const settingsChanged = classifySettingsChanges(nextSettings, state.settings).changed;
     updateWorking(true, settingsChanged ? "Saving sources..." : "Refreshing cache...");
     try {
         if (settingsChanged) {
             state.settings = await saveSettings(nextSettings);
             updateDirtyState();
         }
-        const summary = await refreshCache();
+        const summary = await runtimeCacheLifecycle.refresh();
         showStatus(`Cache refreshed with ${summary?.blockCount || 0} block${summary?.blockCount === 1 ? "" : "s"}.`);
     } catch (error) {
         console.error("Refresh failed", error);
@@ -481,7 +470,7 @@ async function handleClearCacheConfirm(event) {
     updateWorking(true, "Clearing cache...");
     try {
         await clearCache();
-        const { cache, meta } = await getCache();
+        const { cache, meta } = await runtimeCacheLifecycle.read();
         state.cache = cache;
         state.cacheMeta = meta;
         updateCacheInfo();
@@ -557,7 +546,7 @@ async function handleDisconnectArena(event) {
         renderAccountState();
         renderAccountCatalog(new Set());
         updateDirtyState();
-        await refreshCache();
+        await runtimeCacheLifecycle.refresh();
         showStatus("Are.na account disconnected and account sources removed.");
     } catch (error) {
         console.error("Are.na disconnect failed", error);
@@ -707,40 +696,16 @@ function getSelectedAccountChannelSlugs() {
 }
 
 function handleBarComponentChange(event) {
-    const selected = event.target.value;
-    if (selected !== "none") {
-        elements.barComponentSelects.forEach((select) => {
-            if (select !== event.target && select.value === selected) {
-                select.value = "none";
-            }
-        });
-    }
-    updateBarFormatVisibility();
+    barEditor.select(event.target.dataset.barSlot, event.target.value);
     updateSettingsAccessWarning();
     updateDirtyState();
-}
-
-function updateBarFormatVisibility() {
-    const components = new Set(Array.from(elements.barComponentSelects, select => select.value));
-    const showDate = components.has("date") || components.has("dateTime");
-    const showTime = components.has("time") || components.has("dateTime");
-    if (elements.dateFormatField) {
-        elements.dateFormatField.hidden = !showDate;
-    }
-    if (elements.timeFormatField) {
-        elements.timeFormatField.hidden = !showTime;
-    }
-    if (elements.barFormatOptions) {
-        elements.barFormatOptions.hidden = !showDate && !showTime;
-    }
 }
 
 function updateSettingsAccessWarning() {
     if (!elements.settingsAccessWarning) {
         return;
     }
-    const visible = hasVisibleSettingsButton({
-        barLayout: gatherBarLayout(),
+    const visible = barEditor.hasVisibleSettings({
         showHeader: Boolean(elements.showHeader?.checked),
         showFooter: Boolean(elements.showFooter?.checked)
     });
@@ -799,22 +764,23 @@ function showStatus(message) {
     }
 }
 
-function handleRuntimeMessage(message) {
-    if (message?.type === MESSAGES.cacheStatus) {
-        state.cacheMeta = { ...state.cacheMeta, ...message.payload };
-        updateCacheInfo();
-    }
-    return false;
-}
-
 function handleStorageChange(changes, area) {
     if (area !== "local") {
         return;
     }
-    if (changes[STORAGE_KEYS.cache] || changes[STORAGE_KEYS.cacheMeta]) {
-        getCache().then(({ cache, meta }) => {
+    if (changes[STORAGE_KEYS.cache]) {
+        runtimeCacheLifecycle.read().then(({ cache, meta }) => {
             state.cache = cache;
             state.cacheMeta = { ...state.cacheMeta, ...meta, lastUpdated: meta.lastUpdated || cache.fetchedAt || state.cacheMeta.lastUpdated };
+            updateCacheInfo();
+        });
+    } else if (changes[STORAGE_KEYS.cacheMeta]?.newValue) {
+        state.cacheMeta = { ...state.cacheMeta, ...changes[STORAGE_KEYS.cacheMeta].newValue };
+        updateCacheInfo();
+    } else if (changes[STORAGE_KEYS.cacheMeta]) {
+        runtimeCacheLifecycle.read().then(({ cache, meta }) => {
+            state.cache = cache;
+            state.cacheMeta = { ...state.cacheMeta, ...meta };
             updateCacheInfo();
         });
     }
@@ -843,71 +809,11 @@ function updateTileSizeOutput() {
     elements.tileSize.setAttribute("aria-valuetext", TILE_SIZE_LABEL_MAP[label] || label.toUpperCase());
 }
 
-function settingsEqual(next, current) {
-    if (!current) {
-        return false;
-    }
-    return (
-        arraysEqual(next.channelSlugs, current.channelSlugs) &&
-        arraysEqual(next.blockIds, current.blockIds) &&
-        arraysEqual(next.filters, current.filters) &&
-        arraysEqual(next.accountChannelSlugs, current.accountChannelSlugs) &&
-        arraysEqual(next.blockMetaFields, current.blockMetaFields) &&
-        barLayoutsEqual(next.barLayout, current.barLayout) &&
-        next.includeFeed === current.includeFeed &&
-        next.blockCount === current.blockCount &&
-        next.showHeader === current.showHeader &&
-        next.showFooter === current.showFooter &&
-        next.theme === current.theme &&
-        next.tileSize === current.tileSize &&
-        next.dateFormat === current.dateFormat &&
-        next.timeFormat === current.timeFormat
-    );
-}
-
-function arraysEqual(a = [], b = []) {
-    return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function barLayoutsEqual(a, b) {
-    const left = normalizeBarLayout(a);
-    const right = normalizeBarLayout(b);
-    return ["top", "bottom"].every((barName) => (
-        left[barName].left === right[barName].left &&
-        left[barName].right === right[barName].right
-    ));
-}
-
-function sourcesAreDirty() {
-    const values = gatherSourceSettings();
-    return (
-        !arraysEqual(values.channelSlugs, state.settings.channelSlugs) ||
-        !arraysEqual(values.blockIds, state.settings.blockIds) ||
-        !arraysEqual(values.filters, state.settings.filters) ||
-        !arraysEqual(values.accountChannelSlugs, state.settings.accountChannelSlugs) ||
-        values.includeFeed !== state.settings.includeFeed
-    );
-}
-
-function displayIsDirty() {
-    const values = gatherDisplaySettings();
-    return (
-        values.blockCount !== state.settings.blockCount ||
-        values.showHeader !== state.settings.showHeader ||
-        values.showFooter !== state.settings.showFooter ||
-        values.tileSize !== state.settings.tileSize ||
-        values.theme !== state.settings.theme ||
-        values.dateFormat !== state.settings.dateFormat ||
-        values.timeFormat !== state.settings.timeFormat ||
-        !barLayoutsEqual(values.barLayout, state.settings.barLayout) ||
-        !arraysEqual(values.blockMetaFields, state.settings.blockMetaFields)
-    );
-}
-
 function updateDirtyState() {
-    state.sourcesDirty = sourcesAreDirty();
-    state.displayDirty = displayIsDirty();
-    const anyDirty = state.sourcesDirty || state.displayDirty;
+    const changes = classifySettingsChanges({ ...state.settings, ...gatherFormSettings() }, state.settings);
+    state.sourcesDirty = changes.sourcesChanged;
+    state.displayDirty = changes.displayChanged;
+    const anyDirty = changes.changed;
     elements.sourceSaveButtons.forEach((button) => button.classList.toggle("is-dirty", state.sourcesDirty));
     elements.displaySaveButton?.classList.toggle("is-dirty", state.displayDirty);
     elements.saveAllButton?.classList.toggle("is-dirty", anyDirty);
@@ -936,9 +842,8 @@ async function handleSaveAll(event) {
     }
     const formValues = gatherFormSettings();
     const nextSettings = { ...state.settings, ...formValues };
-    const settingsChanged = !settingsEqual(nextSettings, state.settings);
-    const sourcesChanged = sourcesAreDirty();
-    if (!settingsChanged) {
+    const changes = classifySettingsChanges(nextSettings, state.settings);
+    if (!changes.changed) {
         showStatus("No changes to save.");
         return;
     }
@@ -947,9 +852,9 @@ async function handleSaveAll(event) {
         state.settings = await saveSettings(nextSettings);
         updateTheme(state.settings.theme);
         updateDirtyState();
-        if (sourcesChanged) {
+        if (changes.sourcesChanged) {
             showStatus("Settings saved. Refreshing cache...");
-            const summary = await refreshCache();
+            const summary = await runtimeCacheLifecycle.refresh();
             showStatus(`Saved. Cache refreshed with ${summary?.blockCount || 0} block${summary?.blockCount === 1 ? "" : "s"}.`);
         } else {
             showStatus("All settings saved.");
@@ -961,18 +866,6 @@ async function handleSaveAll(event) {
         updateWorking(false);
         updateDirtyState();
     }
-}
-
-function cloneSettings(settings) {
-    return {
-        ...settings,
-        channelSlugs: [...(settings.channelSlugs || [])],
-        blockIds: [...(settings.blockIds || [])],
-        filters: [...(settings.filters || [])],
-        accountChannelSlugs: [...(settings.accountChannelSlugs || [])],
-        barLayout: normalizeBarLayout(settings.barLayout),
-        blockMetaFields: [...(settings.blockMetaFields || [])]
-    };
 }
 
 init();
