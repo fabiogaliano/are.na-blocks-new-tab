@@ -4,9 +4,73 @@ const JSON_HEADERS = { Accept: "application/json" };
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY = 1000;
 
-const isRetryableError = (status) => status >= 500 || status === 429;
+// Are.na rate-limits per 60s window, so a second 429 means the wait was not
+// enough. Hand `retryAt` to the caller instead of blocking a page for minutes.
+const MAX_RATE_LIMIT_WAITS = 1;
+const MAX_RATE_LIMIT_DELAY = 90 * 1000;
+const DEFAULT_RATE_LIMIT_DELAY = 60 * 1000;
+const RATE_LIMIT_JITTER = 300;
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const delay = (ms, signal) => new Promise((resolve, reject) => {
+    const abortError = () => signal.reason || new DOMException("Aborted", "AbortError");
+
+    if (signal?.aborted) {
+        reject(abortError());
+        return;
+    }
+
+    const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+    }, ms);
+
+    const onAbort = () => {
+        clearTimeout(timer);
+        reject(abortError());
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+});
+
+const parseRetryAfterHeader = (value) => {
+    if (!value) {
+        return null;
+    }
+
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) {
+        return seconds * 1000;
+    }
+
+    const httpDate = Date.parse(value);
+    return Number.isFinite(httpDate) ? httpDate - Date.now() : null;
+};
+
+const parseRetryAfterBody = (body) => {
+    let seconds;
+    try {
+        const payload = JSON.parse(body);
+        seconds = Number(payload?.error?.retry_after ?? payload?.retry_after);
+    } catch (_) {
+        return null;
+    }
+    return Number.isFinite(seconds) ? seconds * 1000 : null;
+};
+
+const parseResetHeader = (value) => {
+    const resetAt = Number(value);
+    return Number.isFinite(resetAt) && resetAt > 0 ? resetAt * 1000 - Date.now() : null;
+};
+
+const getRateLimitDelay = (response, body) => {
+    const requested = parseRetryAfterHeader(response.headers.get("Retry-After"))
+        ?? parseRetryAfterBody(body)
+        ?? parseResetHeader(response.headers.get("x-ratelimit-reset"))
+        ?? DEFAULT_RATE_LIMIT_DELAY;
+
+    const bounded = Math.min(Math.max(requested, 0), MAX_RATE_LIMIT_DELAY);
+    return bounded + Math.random() * RATE_LIMIT_JITTER;
+};
 
 const buildQuery = (params = {}) => {
     const searchParams = new URLSearchParams();
@@ -32,6 +96,7 @@ const buildHeaders = (token) => {
 
 export const fetchArenaJson = async (path, { signal, token } = {}) => {
     let lastError;
+    let rateLimitWaits = 0;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
         try {
@@ -41,16 +106,27 @@ export const fetchArenaJson = async (path, { signal, token } = {}) => {
             });
 
             if (!response.ok) {
-                let message = await response.text().catch(() => "");
-                if (message.length > 120) {
-                    message = `${message.slice(0, 117)}...`;
-                }
+                const body = await response.text().catch(() => "");
+                const message = body.length > 120 ? `${body.slice(0, 117)}...` : body;
 
                 const error = new Error(`Are.na request failed (${response.status}): ${message || response.statusText}`);
                 error.status = response.status;
 
-                if (isRetryableError(response.status) && attempt < MAX_RETRIES) {
-                    await delay(RETRY_BASE_DELAY * Math.pow(2, attempt));
+                if (response.status === 429) {
+                    const waitMs = getRateLimitDelay(response, body);
+                    error.retryAt = Date.now() + waitMs;
+
+                    if (rateLimitWaits < MAX_RATE_LIMIT_WAITS && attempt < MAX_RETRIES) {
+                        rateLimitWaits += 1;
+                        await delay(waitMs, signal);
+                        continue;
+                    }
+
+                    throw error;
+                }
+
+                if (response.status >= 500 && attempt < MAX_RETRIES) {
+                    await delay(RETRY_BASE_DELAY * Math.pow(2, attempt), signal);
                     continue;
                 }
 
@@ -72,7 +148,7 @@ export const fetchArenaJson = async (path, { signal, token } = {}) => {
             );
 
             if (isNetworkError && attempt < MAX_RETRIES) {
-                await delay(RETRY_BASE_DELAY * Math.pow(2, attempt));
+                await delay(RETRY_BASE_DELAY * Math.pow(2, attempt), signal);
                 continue;
             }
 

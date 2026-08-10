@@ -1,5 +1,10 @@
 import { CACHE_STATE } from "./constants.js";
 
+// A worker killed mid-refresh leaves `working` in storage forever. The
+// heartbeat is how a later reader tells a live refresh from a dead one.
+const WORKING_HEARTBEAT_MS = 30 * 1000;
+const WORKING_STALE_MS = 3 * 60 * 1000;
+
 const hasCachedBlocks = (cache) => Array.isArray(cache?.blockIds) && cache.blockIds.length > 0;
 
 const getCacheTimestamp = ({ cache, meta }) => meta?.lastUpdated || cache?.fetchedAt || 0;
@@ -41,8 +46,25 @@ export const createCacheLifecycle = ({
         return snapshot;
     };
 
+    const startWorkingHeartbeat = async () => {
+        await writeCacheMeta({ state: CACHE_STATE.working, lastError: null, heartbeatAt: now() });
+
+        let pending = Promise.resolve();
+        const timer = setInterval(() => {
+            pending = pending
+                .catch(() => {})
+                .then(() => writeCacheMeta({ state: CACHE_STATE.working, heartbeatAt: now() }));
+        }, WORKING_HEARTBEAT_MS);
+
+        return async () => {
+            clearInterval(timer);
+            // Draining first stops a late beat from overwriting the final state.
+            await pending.catch(() => {});
+        };
+    };
+
     const refreshDirectly = async (options) => {
-        await writeCacheMeta({ state: CACHE_STATE.working, lastError: null });
+        const stopHeartbeat = await startWorkingHeartbeat();
 
         try {
             const summary = await refreshLocal(options);
@@ -50,6 +72,7 @@ export const createCacheLifecycle = ({
                 throw new Error("Local cache refresh returned an incompatible cache version");
             }
 
+            await stopHeartbeat();
             await writeCacheMeta({
                 state: CACHE_STATE.idle,
                 lastUpdated: summary.fetchedAt,
@@ -58,6 +81,7 @@ export const createCacheLifecycle = ({
             });
             return summary;
         } catch (error) {
+            await stopHeartbeat();
             await writeCacheMeta({
                 state: CACHE_STATE.error,
                 lastError: getErrorMessage(error),
@@ -201,7 +225,7 @@ export const createCacheLifecycle = ({
             return false;
         }
         if (snapshot.meta.state === CACHE_STATE.working) {
-            return true;
+            return now() - (snapshot.meta.heartbeatAt || 0) > WORKING_STALE_MS;
         }
         if (!Number.isFinite(staleAfterMs) || staleAfterMs < 0) {
             return false;

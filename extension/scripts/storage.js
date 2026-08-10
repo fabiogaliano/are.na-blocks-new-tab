@@ -20,7 +20,8 @@ const DEFAULT_CACHE_META = {
     state: "idle",
     lastUpdated: 0,
     lastError: null,
-    blockCount: 0
+    blockCount: 0,
+    heartbeatAt: 0
 };
 
 const DEFAULT_ARENA_AUTH = {
