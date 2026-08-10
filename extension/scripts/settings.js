@@ -159,7 +159,7 @@ async function hydrateState() {
     state.cacheMeta = {
         ...state.cacheMeta,
         ...cacheState.meta,
-        lastUpdated: cacheState.meta.lastUpdated || cacheState.cache.fetchedAt || 0
+        lastUpdated: cacheState.meta.lastUpdated || cacheState.cache.completedAt || 0
     };
 }
 
@@ -431,7 +431,7 @@ async function handleSourcesSave(event) {
             state.settings = await saveSettings(nextSettings);
             updateDirtyState();
         }
-        const summary = await runtimeCacheLifecycle.refresh();
+        const summary = await runtimeCacheLifecycle.refresh({ force: true });
         showStatus(`Cache refreshed with ${summary?.blockCount || 0} block${summary?.blockCount === 1 ? "" : "s"}.`);
     } catch (error) {
         console.error("Refresh failed", error);
@@ -771,7 +771,7 @@ function handleStorageChange(changes, area) {
     if (changes[STORAGE_KEYS.cache]) {
         runtimeCacheLifecycle.read().then(({ cache, meta }) => {
             state.cache = cache;
-            state.cacheMeta = { ...state.cacheMeta, ...meta, lastUpdated: meta.lastUpdated || cache.fetchedAt || state.cacheMeta.lastUpdated };
+            state.cacheMeta = { ...state.cacheMeta, ...meta, lastUpdated: meta.lastUpdated || cache.completedAt || state.cacheMeta.lastUpdated };
             updateCacheInfo();
         });
     } else if (changes[STORAGE_KEYS.cacheMeta]?.newValue) {

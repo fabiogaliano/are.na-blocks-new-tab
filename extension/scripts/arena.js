@@ -324,53 +324,44 @@ export const fetchFeedBlocks = async (token, signal) => {
     return items.filter((item, index, list) => list.findIndex(candidate => candidate.id === item.id) === index);
 };
 
-export const buildCache = async ({
+// Channels stream out one at a time because each is a resumable unit; blocks
+// fetched by id and from the feed are returned together because they are not.
+export const fetchSourceBlocks = async ({
     channelSlugs = [],
-    accountChannelSlugs = [],
     blockIds = [],
     filters = BLOCK_TYPES,
     includeFeed = false,
     token = "",
     signal,
-    onProgress
+    onProgress,
+    onChannelBlocks,
+    freshSlugs = null
 }) => {
     const allowedTypes = new Set(filters?.length ? filters : BLOCK_TYPES);
-    const map = new Map();
-    const allChannelSlugs = [...new Set([...channelSlugs, ...accountChannelSlugs].filter(Boolean))];
+    const allowed = (blocks) => blocks.filter((block) => allowedTypes.has(block.kind));
 
-    const addBlocks = (blocks) => {
-        for (const block of blocks) {
-            if (allowedTypes.has(block.kind)) {
-                map.set(block.id, block);
-            }
+    for (const slug of channelSlugs) {
+        if (freshSlugs?.has(slug)) {
+            continue;
         }
-    };
 
-    for (const slug of allChannelSlugs) {
-        addBlocks(await fetchChannelBlocks(slug, signal, onProgress, token));
+        const blocks = allowed(await fetchChannelBlocks(slug, signal, onProgress, token));
+        if (typeof onChannelBlocks === "function") {
+            await onChannelBlocks(slug, blocks);
+        }
     }
 
+    const standaloneBlocks = [];
+
     if (blockIds.length) {
-        addBlocks(await fetchBlocksById(blockIds, signal, token));
+        standaloneBlocks.push(...allowed(await fetchBlocksById(blockIds, signal, token)));
     }
 
     if (includeFeed && token) {
-        addBlocks(await fetchFeedBlocks(token, signal));
+        standaloneBlocks.push(...allowed(await fetchFeedBlocks(token, signal)));
     }
 
-    const blockIdsList = Array.from(map.keys());
-    return {
-        blocksById: Object.fromEntries(blockIdsList.map(id => [id, map.get(id)])),
-        blockIds: blockIdsList,
-        fetchedAt: Date.now(),
-        sources: {
-            channels: allChannelSlugs,
-            manualChannels: channelSlugs,
-            accountChannels: accountChannelSlugs,
-            blockIds,
-            feed: Boolean(includeFeed && token)
-        }
-    };
+    return { standaloneBlocks };
 };
 
 export const chooseRandomBlocks = (cache, count = 1, exclude = []) => {

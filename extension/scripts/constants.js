@@ -62,7 +62,7 @@ export const DEFAULT_SETTINGS = {
     blockMetaFields: ["title", "description", "createdAt", "blockId", "type"]
 };
 
-export const CACHE_VERSION = 3;
+export const CACHE_VERSION = 4;
 
 export const ARENA_API_ROOT = "https://api.are.na/v3";
 

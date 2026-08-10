@@ -757,7 +757,9 @@ async function triggerCacheRefresh(reason = "manual") {
   state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.working, lastError: null };
   updateCacheStatus();
   try {
-    await runtimeCacheLifecycle.refresh({ reason });
+    // Forced: asking for a refresh by hand should refetch every channel, not
+    // skip the ones a background pass happens to have made fresh.
+    await runtimeCacheLifecycle.refresh({ reason, force: true });
     applyCacheSnapshot(await runtimeCacheLifecycle.read());
     return true;
   } catch (error) {
@@ -826,7 +828,7 @@ function updateCacheSummaryTooltip() {
     return;
   }
   const { blockCount, channelCount, blockIdCount, includesFeed } = getCacheSourceCounts();
-  const timestamp = state.cacheMeta.lastUpdated || state.cache?.fetchedAt;
+  const timestamp = state.cacheMeta.lastUpdated || state.cache?.completedAt;
   const relativeTime = timestamp ? formatRelativeTime(timestamp) : null;
 
   let tooltip;
@@ -1247,7 +1249,7 @@ function formatLinkLabel(url) {
 
 function getCacheLedStatus() {
   const status = state.cacheMeta?.state || CACHE_STATE.idle;
-  const timestamp = state.cacheMeta.lastUpdated || state.cache?.fetchedAt;
+  const timestamp = state.cacheMeta.lastUpdated || state.cache?.completedAt;
 
   if (status === CACHE_STATE.error) {
     return "error";

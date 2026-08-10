@@ -7,7 +7,10 @@ const WORKING_STALE_MS = 3 * 60 * 1000;
 
 const hasCachedBlocks = (cache) => Array.isArray(cache?.blockIds) && cache.blockIds.length > 0;
 
-const getCacheTimestamp = ({ cache, meta }) => meta?.lastUpdated || cache?.fetchedAt || 0;
+// `completedAt` only moves when a whole pass finishes. A pass that stopped
+// halfway has persisted the channels it did reach, and must still read as stale
+// so the ones it never reached get fetched.
+const getCacheTimestamp = ({ cache, meta }) => meta?.lastUpdated || cache?.completedAt || 0;
 
 const getErrorMessage = (error) => error instanceof Error ? error.message : `${error || "Unknown cache refresh error"}`;
 
@@ -75,7 +78,7 @@ export const createCacheLifecycle = ({
             await stopHeartbeat();
             await writeCacheMeta({
                 state: CACHE_STATE.idle,
-                lastUpdated: summary.fetchedAt,
+                lastUpdated: summary.completedAt,
                 lastError: null,
                 blockCount: summary.blockCount
             });
@@ -201,7 +204,7 @@ export const createCacheLifecycle = ({
         }
 
         const blockCount = snapshot.cache.blockIds.length;
-        const lastUpdated = snapshot.cache.fetchedAt || 0;
+        const lastUpdated = snapshot.cache.completedAt || 0;
         const metadataIsCurrent = snapshot.meta.state === CACHE_STATE.idle
             && snapshot.meta.lastError == null
             && snapshot.meta.lastUpdated === lastUpdated
