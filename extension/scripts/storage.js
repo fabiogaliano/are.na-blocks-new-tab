@@ -27,7 +27,9 @@ const DEFAULT_CACHE_META = {
     lastUpdated: 0,
     lastError: null,
     blockCount: 0,
-    heartbeatAt: 0
+    heartbeatAt: 0,
+    retryAt: 0,
+    progress: null
 };
 
 const DEFAULT_ARENA_AUTH = {

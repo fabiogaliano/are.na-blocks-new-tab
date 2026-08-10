@@ -1,6 +1,6 @@
 import { fetchSourceBlocks } from "./arena.js";
-import { CACHE_VERSION, MESSAGES, STORAGE_KEYS } from "./constants.js";
-import { runtime, storage } from "./extension-api.js";
+import { ALARMS, CACHE_VERSION, MESSAGES, STORAGE_KEYS } from "./constants.js";
+import { alarms, runtime, storage } from "./extension-api.js";
 import {
     getArenaAuth,
     getCache,
@@ -34,7 +34,7 @@ const filtersMatch = (cache, filters) => {
         && filters.every((filter) => cached.includes(filter));
 };
 
-const refreshLocal = async ({ testOnly = false, force = false, settingsOverride = null } = {}) => {
+const refreshLocal = async ({ testOnly = false, force = false, settingsOverride = null } = {}, { onProgress } = {}) => {
     const settings = settingsOverride || (await getSettings());
     const auth = await getArenaAuth();
     const channelSlugs = [...new Set([...settings.channelSlugs, ...settings.accountChannelSlugs].filter(Boolean))];
@@ -68,15 +68,34 @@ const refreshLocal = async ({ testOnly = false, force = false, settingsOverride 
         await persist({ ...cache, channelFetchedAt: {} });
     }
 
+    const freshSlugs = refetchAll ? null : getFreshChannelSlugs(cache, Date.now());
+
+    // Channels a previous pass already made fresh count as done, so a resumed
+    // pass carries on from the number the paused one stopped at.
+    const channelsTotal = channelSlugs.length;
+    let channelsDone = freshSlugs ? channelSlugs.filter((slug) => freshSlugs.has(slug)).length : 0;
+    let currentChannel = null;
+
+    const report = () => onProgress?.({ channelsDone, channelsTotal, currentChannel });
+    report();
+
     const { standaloneBlocks } = await fetchSourceBlocks({
         channelSlugs,
         blockIds: settings.blockIds,
         filters: settings.filters,
         includeFeed: settings.includeFeed,
         token: auth.token,
-        freshSlugs: refetchAll ? null : getFreshChannelSlugs(cache, Date.now()),
+        freshSlugs,
+        onProgress: ({ title, slug }) => {
+            currentChannel = title || slug;
+            report();
+        },
         // Checkpoint: a run killed mid-pass leaves the channels it finished on disk.
-        onChannelBlocks: (slug, blocks) => persist(mergeCacheChannel(cache, slug, blocks))
+        onChannelBlocks: async (slug, blocks) => {
+            await persist(mergeCacheChannel(cache, slug, blocks));
+            channelsDone += 1;
+            report();
+        }
     });
 
     const completedAt = Date.now();
@@ -121,11 +140,38 @@ const bootstrapStore = {
     clear: () => storage.remove(STORAGE_KEYS.bootstrap)
 };
 
+// MV3 tears the worker down long before a 60s window reopens, so the wait
+// cannot be a `setTimeout`. Where alarms are unavailable the cooldown still
+// clears, just not until a tab is opened after `retryAt`.
+const scheduleResume = async (retryAt) => {
+    if (!alarms) {
+        return;
+    }
+    try {
+        await alarms.create(ALARMS.cacheResume, { when: retryAt });
+    } catch (error) {
+        console.warn("Could not schedule the Are.na cache resume", error);
+    }
+};
+
+const cancelResume = async () => {
+    if (!alarms) {
+        return;
+    }
+    try {
+        await alarms.clear(ALARMS.cacheResume);
+    } catch (error) {
+        console.warn("Could not clear the Are.na cache resume", error);
+    }
+};
+
 const lifecycleDependencies = {
     cacheVersion: CACHE_VERSION,
     readCache: getCache,
     writeCacheMeta: saveCacheMeta,
-    refreshLocal
+    refreshLocal,
+    scheduleResume,
+    cancelResume
 };
 
 export const cacheLifecycle = createCacheLifecycle({

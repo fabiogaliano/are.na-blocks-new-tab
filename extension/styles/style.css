@@ -1208,6 +1208,52 @@ textarea {
 .status-button {
     display: inline-flex;
     align-items: center;
+    gap: 6px;
+}
+
+/* Status colours, not theme colours: they are picked to carry the same meaning
+   on both backgrounds, so they stay out of the per-theme variable blocks. */
+.cache-led {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background-color: #7a7a7a;
+    transition: background-color 150ms ease;
+}
+
+.cache-led[data-status="fresh"] {
+    background-color: #3faa5a;
+}
+
+.cache-led[data-status="stale"] {
+    background-color: #9a9a9a;
+}
+
+.cache-led[data-status="error"] {
+    background-color: #d4574a;
+}
+
+.cache-led[data-status="working"] {
+    background-color: #3b82c4;
+    animation: cache-led-pulse 1.4s ease-in-out infinite;
+}
+
+.cache-led[data-status="cooldown"] {
+    background-color: #d99a2b;
+    animation: cache-led-pulse 2s ease-in-out infinite;
+}
+
+@keyframes cache-led-pulse {
+    50% {
+        opacity: 0.3;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .cache-led[data-status] {
+        animation: none;
+    }
 }
 
 *::-webkit-scrollbar {

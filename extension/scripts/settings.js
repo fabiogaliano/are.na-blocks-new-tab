@@ -9,10 +9,12 @@ import {
     saveSettings
 } from "./storage.js";
 import { connectArenaAccount, loadArenaAccountCatalog } from "./arena-account.js";
+import { getChannelRequestCost } from "./arena.js";
 import { createBarEditor } from "./bar-customization.js";
 import { canonicalizeSettings, classifySettingsChanges } from "./settings-model.js";
 import { applyTheme } from "./theme.js";
-import { formatRelativeTime } from "./time.js";
+import { formatCountdown, formatRelativeTime } from "./time.js";
+import { getRequestBudget } from "./rate-limiter.js";
 import { runtimeCacheLifecycle } from "./cache-refresh.js";
 
 const EMPTY_AUTH = { token: "", user: null };
@@ -24,8 +26,11 @@ const state = {
     cacheMeta: {
         state: CACHE_STATE.idle,
         lastUpdated: 0,
-        lastError: null
+        lastError: null,
+        retryAt: 0,
+        progress: null
     },
+    rateLimit: null,
     ownedChannels: [],
     followedChannels: [],
     ownedTotal: 0,
@@ -81,8 +86,12 @@ const elements = {
     accountSourcesFieldset: document.getElementById("account-sources-fieldset"),
     ownedChannelPicker: document.getElementById("owned-channel-picker"),
     followedChannelPicker: document.getElementById("followed-channel-picker"),
-    accountChannelNote: document.getElementById("account-channel-note")
+    accountChannelNote: document.getElementById("account-channel-note"),
+    accountCostNote: document.getElementById("account-cost-note"),
+    rateLimitInfo: document.getElementById("rate-limit-info")
 };
+
+let cacheCooldownTimer = null;
 
 const TILE_SIZE_LABEL_MAP = {
     auto: "Auto",
@@ -130,6 +139,7 @@ async function init() {
         populateForm();
         updateTheme(getSelectedTheme());
         updateCacheInfo();
+        renderRateLimitInfo();
         renderAccountState();
         wireEvents();
         if (state.auth.token) {
@@ -148,13 +158,15 @@ async function init() {
 }
 
 async function hydrateState() {
-    const [settings, auth, cacheState] = await Promise.all([
+    const [settings, auth, cacheState, rateLimit] = await Promise.all([
         getSettings(),
         getArenaAuth(),
-        runtimeCacheLifecycle.read()
+        runtimeCacheLifecycle.read(),
+        storage.get(STORAGE_KEYS.rateLimit)
     ]);
     state.settings = settings;
     state.auth = auth;
+    state.rateLimit = rateLimit?.[STORAGE_KEYS.rateLimit] || null;
     state.cache = cacheState.cache;
     state.cacheMeta = {
         ...state.cacheMeta,
@@ -631,6 +643,80 @@ function renderAccountCatalog(selected = new Set(state.settings.accountChannelSl
         }
         elements.accountChannelNote.textContent = notes.join(" ");
     }
+    updateAccountCostNote(selected);
+}
+
+const readRateLimit = () => {
+    const limit = Number(state.rateLimit?.limit);
+    if (!Number.isFinite(limit) || limit <= 0) {
+        return null;
+    }
+    const windowMs = Number(state.rateLimit?.windowMs);
+    return {
+        limit,
+        windowMs: Number.isFinite(windowMs) && windowMs > 0 ? windowMs : 60 * 1000,
+        tier: state.rateLimit?.tier || null
+    };
+};
+
+const formatRateWindow = (windowMs) => windowMs === 60 * 1000 ? "min" : `${Math.round(windowMs / 1000)}s`;
+
+const formatRateWait = (waitMs) => {
+    const seconds = Math.ceil(waitMs / 1000);
+    return seconds < 60 ? `${seconds}s` : `${Math.ceil(seconds / 60)} min`;
+};
+
+function renderRateLimitInfo() {
+    if (!elements.rateLimitInfo) {
+        return;
+    }
+    const rate = readRateLimit();
+    if (!rate) {
+        elements.rateLimitInfo.hidden = true;
+        elements.rateLimitInfo.textContent = "";
+        return;
+    }
+    const tier = rate.tier ? `${rate.tier} · ` : "";
+    elements.rateLimitInfo.textContent = `Are.na rate limit: ${tier}${rate.limit} req/${formatRateWindow(rate.windowMs)}`;
+    elements.rateLimitInfo.hidden = false;
+}
+
+// Informative only. A selection over budget still syncs, it just takes more
+// than one window, and saying so beforehand beats a silent multi-minute wait.
+function updateAccountCostNote(selected) {
+    if (!elements.accountCostNote) {
+        return;
+    }
+
+    const chosen = [...state.ownedChannels, ...state.followedChannels]
+        .filter((channel, index, list) => list.findIndex(item => item.slug === channel.slug) === index)
+        .filter((channel) => selected.has(channel.slug));
+
+    if (!chosen.length) {
+        elements.accountCostNote.hidden = true;
+        elements.accountCostNote.textContent = "";
+        return;
+    }
+
+    const cost = chosen.reduce((total, channel) => total + getChannelRequestCost(channel.contentCount), 0);
+    const summary = `~${cost} request${cost === 1 ? "" : "s"} to sync ${chosen.length} selected account channel${chosen.length === 1 ? "" : "s"}`;
+    const rate = readRateLimit();
+
+    const otherSourcesNote = "Other configured sources may add requests.";
+    if (!rate) {
+        elements.accountCostNote.textContent = `${summary}. ${otherSourcesNote}`;
+    } else {
+        const budget = getRequestBudget(rate.limit);
+        const tier = rate.tier ? `${rate.tier} account` : "account";
+        if (cost <= budget) {
+            elements.accountCostNote.textContent = `${summary}; your ${tier} allows ${rate.limit}/${formatRateWindow(rate.windowMs)}, so these account channels fit one sync window by themselves. ${otherSourcesNote}`;
+        } else {
+            const windows = Math.ceil(cost / budget);
+            const wait = formatRateWait((windows - 1) * rate.windowMs);
+            elements.accountCostNote.textContent = `${summary}; your ${tier} allows ${rate.limit}/${formatRateWindow(rate.windowMs)}, so these account channels need ${windows} sync windows (≈${wait} waiting). ${otherSourcesNote}`;
+        }
+    }
+    elements.accountCostNote.hidden = false;
 }
 
 function renderChannelPicker(container, channels, selected, emptyLabel) {
@@ -682,6 +768,7 @@ function handleAccountChannelChange(event) {
             candidate.checked = input.checked;
         }
     });
+    updateAccountCostNote(new Set(getSelectedAccountChannelSlugs()));
     updateDirtyState();
 }
 
@@ -741,14 +828,51 @@ function updateWorking(isWorking, message) {
     }
 }
 
+function getCooldownRemaining() {
+    if (state.cacheMeta.state !== CACHE_STATE.cooldown) {
+        return 0;
+    }
+    return Math.max((state.cacheMeta.retryAt || 0) - Date.now(), 0);
+}
+
+function formatCacheProgress(progress) {
+    const total = progress?.channelsTotal;
+    if (!Number.isFinite(total) || total <= 0) {
+        return null;
+    }
+    return `${progress.channelsDone ?? 0}/${total} channel${total === 1 ? "" : "s"}`;
+}
+
+function scheduleCacheCooldownTick() {
+    const active = getCooldownRemaining() > 0;
+    if (active && !cacheCooldownTimer) {
+        cacheCooldownTimer = setInterval(updateCacheInfo, 1000);
+    } else if (!active && cacheCooldownTimer) {
+        clearInterval(cacheCooldownTimer);
+        cacheCooldownTimer = null;
+    }
+}
+
 function updateCacheInfo() {
     if (!elements.cacheInfo) {
         return;
     }
     const blockTotal = state.cache?.blockIds?.length || 0;
     const timestamp = state.cacheMeta.lastUpdated;
+    const progress = formatCacheProgress(state.cacheMeta.progress);
+    const remaining = getCooldownRemaining();
+    scheduleCacheCooldownTick();
+
     if (state.cacheMeta.state === CACHE_STATE.working) {
-        elements.cacheInfo.textContent = "Cache refresh in progress...";
+        const channel = state.cacheMeta.progress?.currentChannel;
+        elements.cacheInfo.textContent = progress
+            ? `Refreshing ${channel ? `${channel} · ` : ""}${progress}...`
+            : "Cache refresh in progress...";
+    } else if (state.cacheMeta.state === CACHE_STATE.cooldown) {
+        const synced = progress ? `Synced ${progress}` : "Are.na rate limit reached";
+        elements.cacheInfo.textContent = remaining > 0
+            ? `${synced} · resuming in ${formatCountdown(remaining)}`
+            : `${synced} · resuming now`;
     } else if (state.cacheMeta.state === CACHE_STATE.error) {
         elements.cacheInfo.textContent = sanitizeErrorLabel(state.cacheMeta.lastError);
     } else if (blockTotal) {
@@ -783,6 +907,11 @@ function handleStorageChange(changes, area) {
             state.cacheMeta = { ...state.cacheMeta, ...meta };
             updateCacheInfo();
         });
+    }
+    if (changes[STORAGE_KEYS.rateLimit]) {
+        state.rateLimit = changes[STORAGE_KEYS.rateLimit].newValue || null;
+        renderRateLimitInfo();
+        updateAccountCostNote(new Set(getSelectedAccountChannelSlugs()));
     }
     if (changes[STORAGE_KEYS.settings] && !state.working && !state.sourcesDirty && !state.displayDirty) {
         getSettings().then((settings) => {

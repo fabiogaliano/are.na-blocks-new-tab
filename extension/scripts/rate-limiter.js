@@ -26,7 +26,11 @@ let persistence = Promise.resolve();
 
 const abortError = (signal) => signal.reason || new DOMException("Aborted", "AbortError");
 
-const budget = () => Math.max(1, Math.floor(state.limit * BUDGET_RATIO));
+// Exported so a cost estimate shown to the user is measured against the same
+// headroom the queue actually enforces, not the raw ceiling Are.na advertises.
+export const getRequestBudget = (limit) => Math.max(1, Math.floor(limit * BUDGET_RATIO));
+
+const budget = () => getRequestBudget(state.limit);
 
 const persist = () => {
     const snapshot = {

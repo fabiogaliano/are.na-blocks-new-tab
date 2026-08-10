@@ -71,11 +71,18 @@ export const BLOCK_TYPES = ["Image", "Text", "Link", "Attachment", "Embed", "Cha
 export const CACHE_STATE = {
     idle: "idle",
     working: "working",
+    // A pass paused by a 429. Distinct from `error`: the data is fine, the
+    // window is not, and the pass resumes on its own once `retryAt` passes.
+    cooldown: "cooldown",
     error: "error"
 };
 
 export const MESSAGES = {
     refreshCache: "arena-cache-refresh"
+};
+
+export const ALARMS = {
+    cacheResume: "arena-cache-resume"
 };
 
 export const TILE_SIZE_OPTIONS = ["auto", "xs", "s", "m", "l", "xl"];

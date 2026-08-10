@@ -25,6 +25,11 @@ export const formatRelativeTime = (timestamp) => {
     return `${years} yr${years === 1 ? "" : "s"} ago`;
 };
 
+export const formatCountdown = (ms) => {
+    const seconds = Math.max(Math.ceil((Number(ms) || 0) / 1000), 0);
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+};
+
 export const formatExactDate = (value) => {
     try {
         const date = new Date(value);

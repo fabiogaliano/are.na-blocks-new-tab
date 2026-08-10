@@ -1,5 +1,5 @@
 import { CACHE_STATE, STORAGE_KEYS } from "./constants.js";
-import { formatRelativeTime } from "./time.js";
+import { formatCountdown, formatRelativeTime } from "./time.js";
 import { bookmarks, runtime, storage } from "./extension-api.js";
 import { chooseRandomBlocks } from "./arena.js";
 import { getSettings } from "./storage.js";
@@ -11,6 +11,7 @@ import { createBlockLayout } from "./block-layout.js";
 import { classifySettingsChanges } from "./settings-model.js";
 
 const RESIZE_DEBOUNCE = 150;
+const COOLDOWN_TICK_MS = 1000;
 const BOOKMARK_MENU_OFFSET = 4;
 const BOOKMARK_SUBMENU_OFFSET = 6;
 const BOOKMARK_OVERFLOW_TOLERANCE = 2;
@@ -104,6 +105,7 @@ const elements = {
 };
 
 let resizeTimer = null;
+let cooldownTimer = null;
 let bookmarkResizeObserver = null;
 const openBookmarkFolders = new Set();
 
@@ -249,7 +251,9 @@ async function ensureCacheReady() {
     console.warn("Bootstrap cache request failed", error);
     try {
       applyCacheSnapshot(await runtimeCacheLifecycle.read());
-      if (state.cacheMeta.state !== CACHE_STATE.error) {
+      // A rate limit already wrote `cooldown`; overwriting it with `error` would
+      // drop the countdown and label a pause as a failure.
+      if (state.cacheMeta.state !== CACHE_STATE.error && state.cacheMeta.state !== CACHE_STATE.cooldown) {
         state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: error.message };
         updateCacheStatus();
       }
@@ -754,18 +758,21 @@ function handleCacheButtonClick(event) {
 }
 
 async function triggerCacheRefresh(reason = "manual") {
-  state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.working, lastError: null };
+  const resumeFromCooldown = state.cacheMeta.state === CACHE_STATE.cooldown;
+  state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.working, lastError: null, retryAt: 0 };
   updateCacheStatus();
   try {
-    // Forced: asking for a refresh by hand should refetch every channel, not
-    // skip the ones a background pass happens to have made fresh.
-    await runtimeCacheLifecycle.refresh({ reason, force: true });
+    // A fresh manual request replaces the cache; a cooldown retry preserves the
+    // channel checkpoints that make the paused pass resumable.
+    await runtimeCacheLifecycle.refresh({ reason, force: !resumeFromCooldown });
     applyCacheSnapshot(await runtimeCacheLifecycle.read());
     return true;
   } catch (error) {
     try {
       applyCacheSnapshot(await runtimeCacheLifecycle.read());
-      if (state.cacheMeta.state !== CACHE_STATE.error) {
+      // A rate limit already wrote `cooldown`; overwriting it with `error` would
+      // drop the countdown and label a pause as a failure.
+      if (state.cacheMeta.state !== CACHE_STATE.error && state.cacheMeta.state !== CACHE_STATE.cooldown) {
         state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.error, lastError: error.message };
         updateCacheStatus();
       }
@@ -831,21 +838,23 @@ function updateCacheSummaryTooltip() {
   const timestamp = state.cacheMeta.lastUpdated || state.cache?.completedAt;
   const relativeTime = timestamp ? formatRelativeTime(timestamp) : null;
 
+  // This string is also the button's accessible name, so it deliberately leaves
+  // the countdown to the visible label rather than rewriting it every second.
+  const action = getCooldownRemaining() > 0
+    ? "Are.na rate limit reached. The sync resumes on its own."
+    : "Click to refresh cache.";
+
   let tooltip;
   if (!blockCount) {
     tooltip = "No cached blocks yet.";
-    if (relativeTime) {
-      tooltip += `\nLast refresh: ${relativeTime}`;
-    }
-    tooltip += "\nClick to refresh cache.";
   } else {
     const feedLabel = includesFeed ? " plus your Are.na feed" : "";
     tooltip = `Randomly picked from ${formatCount(blockCount, "block")}, sourced from ${formatCount(channelCount, "channel")} and ${formatCount(blockIdCount, "specific block", "specific blocks")}${feedLabel}.`;
-    if (relativeTime) {
-      tooltip += `\nLast refresh: ${relativeTime}`;
-    }
-    tooltip += "\nClick to refresh cache.";
   }
+  if (relativeTime) {
+    tooltip += `\nLast refresh: ${relativeTime}`;
+  }
+  tooltip += `\n${action}`;
   button.title = tooltip;
   button.setAttribute("aria-label", tooltip.replace(/\n/g, " "));
 }
@@ -1247,12 +1256,47 @@ function formatLinkLabel(url) {
   }
 }
 
+function getCooldownRemaining() {
+  if (state.cacheMeta?.state !== CACHE_STATE.cooldown) {
+    return 0;
+  }
+  return Math.max((state.cacheMeta.retryAt || 0) - Date.now(), 0);
+}
+
+function formatCacheProgress(progress) {
+  const total = progress?.channelsTotal;
+  if (!Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  return `${progress.channelsDone ?? 0}/${total}`;
+}
+
+// The button sits in a bar sized for a block count, so a long channel title has
+// to be cut the same way an error message already is.
+function truncateChannelLabel(value, max = 18) {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+function scheduleCooldownTick() {
+  const active = getCooldownRemaining() > 0;
+  if (active && !cooldownTimer) {
+    cooldownTimer = setInterval(updateCacheStatus, COOLDOWN_TICK_MS);
+  } else if (!active && cooldownTimer) {
+    clearInterval(cooldownTimer);
+    cooldownTimer = null;
+  }
+}
+
 function getCacheLedStatus() {
   const status = state.cacheMeta?.state || CACHE_STATE.idle;
   const timestamp = state.cacheMeta.lastUpdated || state.cache?.completedAt;
 
   if (status === CACHE_STATE.error) {
     return "error";
+  }
+
+  if (status === CACHE_STATE.cooldown) {
+    return "cooldown";
   }
 
   if (status === CACHE_STATE.working) {
@@ -1276,14 +1320,19 @@ function getCacheLedStatus() {
 function updateCacheStatus() {
   const label = elements.cacheLabel;
   const button = elements.cacheButton;
+  const status = state.cacheMeta?.state || CACHE_STATE.idle;
+  const remaining = getCooldownRemaining();
+
   if (button) {
-    button.disabled = state.cacheMeta?.state === CACHE_STATE.working;
+    // Re-enabled the moment the window reopens, so a user who does not want to
+    // wait for the alarm can start the pass by hand.
+    button.disabled = status === CACHE_STATE.working || remaining > 0;
   }
+  scheduleCooldownTick();
   if (!label) {
     return;
   }
 
-  const status = state.cacheMeta?.state || CACHE_STATE.idle;
   const ledStatus = getCacheLedStatus();
 
   // Update LED indicator
@@ -1298,9 +1347,24 @@ function updateCacheStatus() {
   }
 
   switch (status) {
-    case CACHE_STATE.working:
-      label.textContent = "Refreshing...";
+    case CACHE_STATE.working: {
+      const progress = formatCacheProgress(state.cacheMeta.progress);
+      const channel = state.cacheMeta.progress?.currentChannel;
+      if (channel && progress) {
+        label.textContent = `Syncing ${truncateChannelLabel(channel)} · ${progress}`;
+      } else {
+        label.textContent = progress ? `Syncing · ${progress}` : "Refreshing...";
+      }
       break;
+    }
+    case CACHE_STATE.cooldown: {
+      const progress = formatCacheProgress(state.cacheMeta.progress);
+      const synced = progress ? `Synced ${progress}` : "Rate limited";
+      label.textContent = remaining > 0
+        ? `${synced} · resuming in ${formatCountdown(remaining)}`
+        : `${synced} · resuming`;
+      break;
+    }
     case CACHE_STATE.error:
       label.textContent = sanitizeErrorLabel(state.cacheMeta.lastError);
       break;

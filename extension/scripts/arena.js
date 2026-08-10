@@ -6,6 +6,11 @@ const PER_PAGE = 100;
 const MAX_PAGES = 10;
 const REQUEST_BATCH = 4;
 
+export const getChannelRequestCost = (contentCount) => {
+    const pages = Math.ceil((Number(contentCount) || 0) / PER_PAGE);
+    return 1 + Math.min(Math.max(pages, 1), MAX_PAGES);
+};
+
 const safeUrl = (url) => {
     if (!url) return null;
     try {
@@ -277,6 +282,7 @@ export const fetchChannelBlocks = async (slug, signal, onProgress, token) => {
         if (typeof onProgress === "function") {
             onProgress({
                 slug,
+                title: channel.title || slug,
                 page,
                 total: payload?.meta?.total_count || channel.counts?.contents || normalized.length
             });
@@ -345,6 +351,10 @@ export const fetchSourceBlocks = async ({
             continue;
         }
 
+        // `fetchChannelBlocks` cannot report before its pages land, which is the
+        // whole download. Naming the slug first is what makes progress live; the
+        // title replaces it once the channel itself has been read.
+        onProgress?.({ slug, title: null });
         const blocks = allowed(await fetchChannelBlocks(slug, signal, onProgress, token));
         if (typeof onChannelBlocks === "function") {
             await onChannelBlocks(slug, blocks);

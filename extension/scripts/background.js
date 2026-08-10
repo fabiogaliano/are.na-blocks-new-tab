@@ -1,5 +1,5 @@
-import { runtime } from "./extension-api.js";
-import { CACHE_STATE, MESSAGES } from "./constants.js";
+import { addListenerSafe, alarms, runtime } from "./extension-api.js";
+import { ALARMS, CACHE_STATE, MESSAGES } from "./constants.js";
 import { saveCacheMeta } from "./storage.js";
 import { cacheLifecycle } from "./cache-refresh.js";
 
@@ -20,6 +20,19 @@ runtime.onInstalled.addListener(async () => {
     const { cache } = await cacheLifecycle.read();
     if (!cache.blockIds.length) {
         await saveCacheMeta({ state: CACHE_STATE.idle, lastUpdated: 0, lastError: null });
+    }
+});
+
+addListenerSafe(alarms?.onAlarm, async (alarm) => {
+    if (alarm?.name !== ALARMS.cacheResume) {
+        return;
+    }
+    try {
+        // Not forced: the point of resuming is to pick up the channels the
+        // paused pass never reached, not to spend the window on the ones it did.
+        await cacheLifecycle.refresh({ reason: "cooldown-resume" });
+    } catch (error) {
+        console.error("Cache resume after rate limit failed", error);
     }
 });
 

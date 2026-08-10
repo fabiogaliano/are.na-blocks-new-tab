@@ -5,6 +5,10 @@ import { CACHE_STATE } from "./constants.js";
 const WORKING_HEARTBEAT_MS = 30 * 1000;
 const WORKING_STALE_MS = 3 * 60 * 1000;
 
+// `storage.onChanged` fans out to every open new tab, so progress cannot be
+// written per page fetched. One tick is the finest granularity worth paying for.
+const WORKING_TICK_MS = 1000;
+
 const hasCachedBlocks = (cache) => Array.isArray(cache?.blockIds) && cache.blockIds.length > 0;
 
 // `completedAt` only moves when a whole pass finishes. A pass that stopped
@@ -14,7 +18,16 @@ const getCacheTimestamp = ({ cache, meta }) => meta?.lastUpdated || cache?.compl
 
 const getErrorMessage = (error) => error instanceof Error ? error.message : `${error || "Unknown cache refresh error"}`;
 
-const getRefreshKey = (options) => JSON.stringify(options || {});
+// Only a 429 carries `retryAt`. Anything else is a real failure and must not be
+// dressed up as a pause the user is told to wait out.
+const getRetryAt = (error) => Number.isFinite(error?.retryAt) ? error.retryAt : 0;
+
+const getRefreshKey = (options = {}) => {
+    // `reason` identifies the caller but cannot change the resulting cache.
+    const refreshOptions = { ...options };
+    delete refreshOptions.reason;
+    return JSON.stringify(refreshOptions);
+};
 
 export const createCacheLifecycle = ({
     cacheVersion,
@@ -23,6 +36,8 @@ export const createCacheLifecycle = ({
     refreshLocal,
     refreshRemote = null,
     bootstrapStore = null,
+    scheduleResume = async () => {},
+    cancelResume = async () => {},
     staleAfterMs = null,
     reconcileReadyMeta = false,
     emptyRefreshReason = "bootstrap",
@@ -49,47 +64,93 @@ export const createCacheLifecycle = ({
         return snapshot;
     };
 
-    const startWorkingHeartbeat = async () => {
-        await writeCacheMeta({ state: CACHE_STATE.working, lastError: null, heartbeatAt: now() });
+    // One timer covers both jobs: a tick with new progress publishes it, and a
+    // tick with nothing new still beats often enough to prove the run is alive.
+    const startWorkingReport = () => {
+        let progress = null;
+        let unpublished = false;
+        let lastWriteAt = now();
+        let pending = writeCacheMeta({
+            state: CACHE_STATE.working,
+            lastError: null,
+            heartbeatAt: lastWriteAt,
+            retryAt: 0,
+            progress: null
+        });
 
-        let pending = Promise.resolve();
         const timer = setInterval(() => {
+            const at = now();
+            if (!unpublished && at - lastWriteAt < WORKING_HEARTBEAT_MS) {
+                return;
+            }
+
+            unpublished = false;
+            lastWriteAt = at;
             pending = pending
                 .catch(() => {})
-                .then(() => writeCacheMeta({ state: CACHE_STATE.working, heartbeatAt: now() }));
-        }, WORKING_HEARTBEAT_MS);
+                .then(() => writeCacheMeta({ state: CACHE_STATE.working, heartbeatAt: now(), progress }));
+        }, WORKING_TICK_MS);
 
-        return async () => {
-            clearInterval(timer);
-            // Draining first stops a late beat from overwriting the final state.
-            await pending.catch(() => {});
+        return {
+            report: (next) => {
+                progress = next;
+                unpublished = true;
+            },
+            stop: async () => {
+                clearInterval(timer);
+                // Draining first stops a late beat from overwriting the final state.
+                await pending.catch(() => {});
+                return progress;
+            }
         };
     };
 
     const refreshDirectly = async (options) => {
-        const stopHeartbeat = await startWorkingHeartbeat();
+        // The opening write is not awaited: the `pending` chain keeps it ahead of
+        // every later write, so the fetch can start while it lands.
+        const report = startWorkingReport();
 
         try {
-            const summary = await refreshLocal(options);
+            const summary = await refreshLocal(options, { onProgress: report.report });
             if (!summary || summary.cacheVersion !== cacheVersion) {
                 throw new Error("Local cache refresh returned an incompatible cache version");
             }
 
-            await stopHeartbeat();
+            await report.stop();
+            await cancelResume();
             await writeCacheMeta({
                 state: CACHE_STATE.idle,
                 lastUpdated: summary.completedAt,
                 lastError: null,
-                blockCount: summary.blockCount
+                blockCount: summary.blockCount,
+                retryAt: 0,
+                progress: null
             });
             return summary;
         } catch (error) {
-            await stopHeartbeat();
-            await writeCacheMeta({
-                state: CACHE_STATE.error,
-                lastError: getErrorMessage(error),
-                lastUpdated: now()
-            });
+            const progress = await report.stop();
+            const retryAt = getRetryAt(error);
+
+            if (retryAt > now()) {
+                // `lastUpdated` deliberately stays put: the channels this pass
+                // never reached must still read as stale once the window opens.
+                await writeCacheMeta({
+                    state: CACHE_STATE.cooldown,
+                    lastError: null,
+                    retryAt,
+                    progress
+                });
+                await scheduleResume(retryAt);
+            } else {
+                await cancelResume();
+                await writeCacheMeta({
+                    state: CACHE_STATE.error,
+                    lastError: getErrorMessage(error),
+                    lastUpdated: now(),
+                    retryAt: 0,
+                    progress: null
+                });
+            }
             throw error;
         }
     };
@@ -199,7 +260,10 @@ export const createCacheLifecycle = ({
     };
 
     const reconcileMetadata = async (snapshot) => {
-        if (!reconcileReadyMeta || !hasCachedBlocks(snapshot.cache) || snapshot.meta.state === CACHE_STATE.working) {
+        // Cooldown is as much a live pass as working is, and reconciling it back
+        // to idle would erase the progress and `retryAt` the UI counts down from.
+        const inFlight = snapshot.meta.state === CACHE_STATE.working || snapshot.meta.state === CACHE_STATE.cooldown;
+        if (!reconcileReadyMeta || !hasCachedBlocks(snapshot.cache) || inFlight) {
             return snapshot;
         }
 
@@ -229,6 +293,12 @@ export const createCacheLifecycle = ({
         }
         if (snapshot.meta.state === CACHE_STATE.working) {
             return now() - (snapshot.meta.heartbeatAt || 0) > WORKING_STALE_MS;
+        }
+        // Opening a tab is the second way a paused pass resumes, and the only one
+        // left where `chrome.alarms` is unavailable. Before `retryAt` it must not
+        // fire, or every new tab spends another request into a closed window.
+        if (snapshot.meta.state === CACHE_STATE.cooldown) {
+            return now() >= (snapshot.meta.retryAt || 0);
         }
         if (!Number.isFinite(staleAfterMs) || staleAfterMs < 0) {
             return false;

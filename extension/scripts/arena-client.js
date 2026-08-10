@@ -5,9 +5,8 @@ const JSON_HEADERS = { Accept: "application/json" };
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY = 1000;
 
-// Are.na rate-limits per 60s window, so a second 429 means the wait was not
-// enough. Hand `retryAt` to the caller instead of blocking a page for minutes.
-const MAX_RATE_LIMIT_WAITS = 1;
+// A worker cannot reliably survive a Retry-After timeout. The cache lifecycle
+// persists `retryAt` and resumes the request through an alarm.
 const MAX_RATE_LIMIT_DELAY = 90 * 1000;
 const DEFAULT_RATE_LIMIT_DELAY = 60 * 1000;
 const RATE_LIMIT_JITTER = 300;
@@ -97,7 +96,6 @@ const buildHeaders = (token) => {
 
 export const fetchArenaJson = async (path, { signal, token } = {}) => {
     let lastError;
-    let rateLimitWaits = 0;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
         try {
@@ -136,13 +134,6 @@ export const fetchArenaJson = async (path, { signal, token } = {}) => {
 
                 if (response.status === 429) {
                     error.retryAt = retryAt;
-
-                    if (rateLimitWaits < MAX_RATE_LIMIT_WAITS && attempt < MAX_RETRIES) {
-                        rateLimitWaits += 1;
-                        await delay(waitMs, signal);
-                        continue;
-                    }
-
                     throw error;
                 }
 
