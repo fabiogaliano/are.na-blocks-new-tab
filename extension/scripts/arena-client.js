@@ -1,4 +1,5 @@
 import { ARENA_API_ROOT } from "./constants.js";
+import { acquireRequestSlot, noteRateLimitExhausted, observeRateLimit, releaseRequestSlot } from "./rate-limiter.js";
 
 const JSON_HEADERS = { Accept: "application/json" };
 const MAX_RETRIES = 3;
@@ -100,21 +101,41 @@ export const fetchArenaJson = async (path, { signal, token } = {}) => {
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
         try {
-            const response = await fetch(`${ARENA_API_ROOT}${path}`, {
-                headers: buildHeaders(token),
-                signal
-            });
+            await acquireRequestSlot(signal);
+
+            let response;
+            let body = "";
+            let waitMs = 0;
+            let retryAt = 0;
+
+            try {
+                response = await fetch(`${ARENA_API_ROOT}${path}`, {
+                    headers: buildHeaders(token),
+                    signal
+                });
+
+                if (!response.ok) {
+                    body = await response.text().catch(() => "");
+                    if (response.status === 429) {
+                        waitMs = getRateLimitDelay(response, body);
+                        retryAt = Date.now() + waitMs;
+                        noteRateLimitExhausted(retryAt);
+                    }
+                }
+
+                observeRateLimit(response);
+            } finally {
+                releaseRequestSlot();
+            }
 
             if (!response.ok) {
-                const body = await response.text().catch(() => "");
                 const message = body.length > 120 ? `${body.slice(0, 117)}...` : body;
 
                 const error = new Error(`Are.na request failed (${response.status}): ${message || response.statusText}`);
                 error.status = response.status;
 
                 if (response.status === 429) {
-                    const waitMs = getRateLimitDelay(response, body);
-                    error.retryAt = Date.now() + waitMs;
+                    error.retryAt = retryAt;
 
                     if (rateLimitWaits < MAX_RATE_LIMIT_WAITS && attempt < MAX_RETRIES) {
                         rateLimitWaits += 1;

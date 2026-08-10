@@ -4,6 +4,7 @@ import { sanitizeHtml, toPlainText } from "./sanitize.js";
 
 const PER_PAGE = 100;
 const MAX_PAGES = 10;
+const REQUEST_BATCH = 4;
 
 const safeUrl = (url) => {
     if (!url) return null;
@@ -239,20 +240,27 @@ export const fetchChannelBlocks = async (slug, signal, onProgress, token) => {
     ]);
 
     const totalPages = Math.min(firstPage?.meta?.total_pages || 1, MAX_PAGES);
-    const pageRequests = [];
+    const orderedPages = [{ page: 1, payload: firstPage }];
 
-    for (let page = 2; page <= totalPages; page += 1) {
-        pageRequests.push(
-            fetchArenaChannelContentsPage(slug, { page, per: PER_PAGE, sort: "position_asc", signal, token })
-                .then((payload) => ({ page, payload }))
-        );
+    for (let start = 2; start <= totalPages; start += REQUEST_BATCH) {
+        const batch = [];
+        for (let page = start; page < start + REQUEST_BATCH && page <= totalPages; page += 1) {
+            batch.push(
+                fetchArenaChannelContentsPage(slug, { page, per: PER_PAGE, sort: "position_asc", signal, token })
+                    .then((payload) => ({ page, payload }))
+            );
+        }
+
+        const settled = await Promise.allSettled(batch);
+        const failure = settled.find((result) => result.status === "rejected");
+        if (failure) {
+            throw failure.reason;
+        }
+
+        orderedPages.push(...settled.map((result) => result.value));
     }
 
-    const remainingPages = await Promise.all(pageRequests);
-    const orderedPages = [
-        { page: 1, payload: firstPage },
-        ...remainingPages
-    ].sort((left, right) => left.page - right.page);
+    orderedPages.sort((left, right) => left.page - right.page);
 
     const normalized = [];
     for (const { page, payload } of orderedPages) {
@@ -279,7 +287,13 @@ export const fetchChannelBlocks = async (slug, signal, onProgress, token) => {
 };
 
 export const fetchBlocksById = async (ids, signal, token) => {
-    const responses = await Promise.all(ids.map((id) => fetchArenaBlock(id, { signal, token })));
+    const responses = [];
+
+    for (let start = 0; start < ids.length; start += REQUEST_BATCH) {
+        const batch = ids.slice(start, start + REQUEST_BATCH);
+        responses.push(...await Promise.all(batch.map((id) => fetchArenaBlock(id, { signal, token }))));
+    }
+
     return responses.map((item) => normalizeArenaItem(item));
 };
 

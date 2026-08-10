@@ -3,7 +3,8 @@ export const STORAGE_KEYS = {
     cache: "blockCache",
     cacheMeta: "blockCacheMeta",
     bootstrap: "bootstrapState",
-    arenaAuth: "arenaAuth"
+    arenaAuth: "arenaAuth",
+    rateLimit: "arenaRateLimit"
 };
 
 export const BAR_COMPONENTS = ["none", "bookmarks", "cache", "settings", "date", "time", "dateTime"];
