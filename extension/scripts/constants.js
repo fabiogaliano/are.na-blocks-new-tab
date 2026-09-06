@@ -62,7 +62,10 @@ export const DEFAULT_SETTINGS = {
     blockMetaFields: ["title", "description", "createdAt", "blockId", "type"]
 };
 
-export const CACHE_VERSION = 4;
+// 5: block records moved out of the cache object into the block store. The bump
+// discards v4 caches, which carried every block inline and are the payload this
+// version exists to stop writing.
+export const CACHE_VERSION = 5;
 
 export const ARENA_API_ROOT = "https://api.are.na/v3";
 

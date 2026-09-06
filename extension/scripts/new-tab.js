@@ -1,7 +1,8 @@
 import { CACHE_STATE, STORAGE_KEYS } from "./constants.js";
 import { formatCountdown, formatRelativeTime } from "./time.js";
 import { bookmarks, runtime, storage } from "./extension-api.js";
-import { chooseRandomBlocks } from "./arena.js";
+import { chooseRandomBlockIds } from "./arena.js";
+import { getBlocks } from "./block-store.js";
 import { getSettings } from "./storage.js";
 import { applyTheme } from "./theme.js";
 import { runtimeCacheLifecycle } from "./cache-refresh.js";
@@ -287,7 +288,7 @@ function wireEvents() {
 
 async function renderAll() {
   await renderBookmarks();
-  renderBlocks();
+  await renderBlocks();
   updateCacheStatus();
 }
 
@@ -991,7 +992,7 @@ function needsCacheSelection() {
     elements.blocksContainer.classList.contains("is-empty");
 }
 
-function renderBlocks() {
+async function renderBlocks() {
   const container = elements.blocksContainer;
   if (!container) {
     return;
@@ -1007,7 +1008,16 @@ function renderBlocks() {
   }
 
   const blockCount = Math.max(1, Number(state.settings?.blockCount) || 1);
-  const blocks = chooseRandomBlocks(state.cache, blockCount);
+  const ids = chooseRandomBlockIds(state.cache, blockCount);
+  // Only the ids about to be drawn are read, so this cost no longer grows with
+  // the size of the account. Most callers do not await this, so a store that
+  // will not open has to end as an empty tab rather than a rejected promise.
+  let blocks = [];
+  try {
+    blocks = await getBlocks(ids);
+  } catch (error) {
+    console.warn("Could not read cached blocks", error);
+  }
   if (!blocks.length) {
     state.currentBlocks = [];
     showEmptyState();

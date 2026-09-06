@@ -374,7 +374,10 @@ export const fetchSourceBlocks = async ({
     return { standaloneBlocks };
 };
 
-export const chooseRandomBlocks = (cache, count = 1, exclude = []) => {
+// Returns ids, not blocks: the block records are in the block store and the
+// caller fetches only the few it is about to render, rather than this module
+// reaching into storage to hand back the whole selection.
+export const chooseRandomBlockIds = (cache, count = 1, exclude = []) => {
     const pool = cache?.blockIds || [];
     if (!pool.length) return [];
 
@@ -388,8 +391,5 @@ export const chooseRandomBlocks = (cache, count = 1, exclude = []) => {
         [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
 
-    return shuffled
-        .slice(0, Math.min(count, shuffled.length))
-        .map(id => cache.blocksById[id])
-        .filter(Boolean);
+    return shuffled.slice(0, Math.min(count, shuffled.length));
 };

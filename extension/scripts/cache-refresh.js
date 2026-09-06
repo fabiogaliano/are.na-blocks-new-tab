@@ -1,6 +1,7 @@
 import { fetchSourceBlocks } from "./arena.js";
 import { ALARMS, CACHE_VERSION, MESSAGES, STORAGE_KEYS } from "./constants.js";
 import { alarms, runtime, storage } from "./extension-api.js";
+import { putBlocks, retainBlocks } from "./block-store.js";
 import {
     getArenaAuth,
     getCache,
@@ -62,6 +63,16 @@ const refreshLocal = async ({ testOnly = false, force = false, settingsOverride 
         }
     };
 
+    // Blocks go in before the index that names them. A pass killed between the
+    // two leaves records nothing points at, which the next pass reconciles; the
+    // reverse order would leave ids whose blocks were never stored, and those
+    // render as gaps until a full refresh clears them.
+    const persistBlocks = async (blocks) => {
+        if (!testOnly) {
+            await putBlocks(blocks);
+        }
+    };
+
     // Old timestamps cannot distinguish channels completed by this full pass
     // from channels not yet forced or still built with the previous filters.
     if (refetchAll) {
@@ -92,6 +103,7 @@ const refreshLocal = async ({ testOnly = false, force = false, settingsOverride 
         },
         // Checkpoint: a run killed mid-pass leaves the channels it finished on disk.
         onChannelBlocks: async (slug, blocks) => {
+            await persistBlocks(blocks);
             await persist(mergeCacheChannel(cache, slug, blocks));
             channelsDone += 1;
             report();
@@ -99,7 +111,15 @@ const refreshLocal = async ({ testOnly = false, force = false, settingsOverride 
     });
 
     const completedAt = Date.now();
+    await persistBlocks(standaloneBlocks);
     await persist({ ...mergeCacheStandalone(cache, standaloneBlocks), completedAt });
+
+    // Once per completed pass, not per checkpoint: dropping a channel or
+    // finishing a forced refresh orphans the blocks only it referenced, and
+    // walking every key is affordable here but not 49 times over.
+    if (!testOnly) {
+        await retainBlocks(cache.blockIds);
+    }
 
     return {
         blockCount: cache.blockIds.length,

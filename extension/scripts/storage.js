@@ -1,14 +1,14 @@
 import { storage } from "./extension-api.js";
+import { clearBlocks } from "./block-store.js";
 import { CACHE_VERSION, STORAGE_KEYS } from "./constants.js";
 import { canonicalizeSettings } from "./settings-model.js";
 
 // A factory, not a constant: the cache carries nested objects and a spread copy
-// would hand every caller the same `blocksById` and `channelFetchedAt`.
+// would hand every caller the same `channelBlockIds` and `channelFetchedAt`.
 const createDefaultCache = () => ({
     version: CACHE_VERSION,
     completedAt: 0,
     blockIds: [],
-    blocksById: {},
     channelBlockIds: {},
     channelFetchedAt: {},
     standaloneBlockIds: [],
@@ -77,52 +77,32 @@ export const saveCache = async (cache) => {
 // is the tempting shortcut and it is wrong: that field holds whichever channel
 // fetched the block last, so dropping that channel evicts a block the others
 // still list.
-const rebuildBlocks = (cache, incoming) => {
-    const fresh = new Map(incoming.map((block) => [block.id, block]));
-    const previous = cache.blocksById && typeof cache.blocksById === "object" ? cache.blocksById : {};
-
+//
+// Only ids are rebuilt here. The block records themselves live in the block
+// store, written before the index that names them, so this stays a pure
+// function over the membership records.
+const rebuildIndex = (cache) => {
     const retained = new Set(cache.standaloneBlockIds || []);
     for (const memberIds of Object.values(cache.channelBlockIds || {})) {
         for (const id of memberIds) {
             retained.add(id);
         }
     }
-
-    const blockIds = [];
-    const blocksById = {};
-    let missing = 0;
-    for (const id of retained) {
-        const block = fresh.get(id) || previous[id];
-        if (!block) {
-            missing += 1;
-            continue;
-        }
-        blockIds.push(id);
-        blocksById[id] = block;
-    }
-
-    // Membership and block data are written together, so a gap is a merge bug or
-    // a truncated store. Dropping the id keeps the cache usable; the warning is
-    // the only trace it happened.
-    if (missing) {
-        console.warn(`Are.na cache: ${missing} tracked block(s) had no stored data`);
-    }
-
-    return { ...cache, blockIds, blocksById };
+    return { ...cache, blockIds: [...retained] };
 };
 
-export const mergeCacheChannel = (cache, slug, blocks, at = Date.now()) => rebuildBlocks({
+export const mergeCacheChannel = (cache, slug, blocks, at = Date.now()) => rebuildIndex({
     ...cache,
     channelBlockIds: { ...(cache?.channelBlockIds || {}), [slug]: blocks.map((block) => block.id) },
     channelFetchedAt: { ...(cache?.channelFetchedAt || {}), [slug]: at }
-}, blocks);
+});
 
 // Blocks fetched by id and blocks pulled from the feed have no channel to be
 // refreshed against, so every pass replaces them wholesale.
-export const mergeCacheStandalone = (cache, blocks) => rebuildBlocks({
+export const mergeCacheStandalone = (cache, blocks) => rebuildIndex({
     ...cache,
     standaloneBlockIds: blocks.map((block) => block.id)
-}, blocks);
+});
 
 export const pruneCacheChannels = (cache, slugs) => {
     const keep = new Set(slugs);
@@ -137,11 +117,11 @@ export const pruneCacheChannels = (cache, slugs) => {
     }
 
     const kept = (record) => Object.fromEntries(Object.entries(record || {}).filter(([slug]) => keep.has(slug)));
-    return rebuildBlocks({
+    return rebuildIndex({
         ...cache,
         channelBlockIds: kept(cache?.channelBlockIds),
         channelFetchedAt: kept(cache?.channelFetchedAt)
-    }, []);
+    });
 };
 
 export const saveCacheMeta = async (meta) => {
@@ -155,6 +135,7 @@ export const saveCacheMeta = async (meta) => {
 
 export const clearCache = async () => {
     await storage.remove([STORAGE_KEYS.cache, STORAGE_KEYS.cacheMeta, STORAGE_KEYS.bootstrap]);
+    await clearBlocks();
 };
 
 export const getArenaAuth = async () => {
