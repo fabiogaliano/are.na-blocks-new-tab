@@ -290,9 +290,21 @@ export function createBlockLayout({ container, contentArea, renderCard }) {
                     }
                 }
                 break;
-            default:
-                rows = Array.from({ length: count }, () => 1);
+            default: {
+                // Fixed tile sizes cannot shrink to fit, so settle on the widest
+                // column count the viewport allows and spread blocks evenly over it.
+                const columns = superWide && fitsColumns(count)
+                    ? count
+                    : [4, 3, 2].find((option) => fitsColumns(option)) ?? 1;
+                const rowCount = Math.ceil(count / columns);
+                const minimumColumns = Math.floor(count / rowCount);
+                const fullerRows = count % rowCount;
+                rows = Array.from(
+                    { length: rowCount },
+                    (_, index) => minimumColumns + (index < fullerRows ? 1 : 0),
+                );
                 break;
+            }
         }
 
         const rowWidths = rows.map((columns) => widthFor(columns));

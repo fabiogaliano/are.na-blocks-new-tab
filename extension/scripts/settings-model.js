@@ -41,7 +41,7 @@ const normalizeBlockIds = (value) => unique(
 const normalizeBlockCount = (value) => {
     const parsed = Number(value);
     return Number.isFinite(parsed)
-        ? Math.min(6, Math.max(1, Math.trunc(parsed)))
+        ? Math.min(8, Math.max(1, Math.trunc(parsed)))
         : DEFAULT_SETTINGS.blockCount;
 };
 

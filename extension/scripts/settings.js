@@ -373,7 +373,7 @@ function gatherSourceSettings() {
 }
 
 function gatherDisplaySettings() {
-    const blockCount = Math.min(6, Math.max(1, Number(elements.blockCount?.value || DEFAULT_SETTINGS.blockCount)));
+    const blockCount = Math.min(8, Math.max(1, Number(elements.blockCount?.value || DEFAULT_SETTINGS.blockCount)));
     const tileIndex = Number(elements.tileSize?.value || 0);
     const blockMetaFields = Array.from(document.querySelectorAll("input[name='blockMetaFields']:checked"), input => input.value);
     return {
