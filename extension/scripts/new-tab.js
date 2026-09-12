@@ -1186,6 +1186,11 @@ function buildFallbackCard(block) {
 
 function buildMainContent(container, block) {
   container.innerHTML = "";
+  const node = buildMainNode(block);
+  container.appendChild(block.arenaUrl ? wrapInArenaLink(node, block.arenaUrl) : node);
+}
+
+function buildMainNode(block) {
   const kind = block.kind;
 
   if (kind !== "Text" && block.imageUrl) {
@@ -1193,8 +1198,7 @@ function buildMainContent(container, block) {
     img.src = block.imageUrl;
     img.alt = block.imageAlt || block.descriptionText || block.title || "Are.na preview";
     img.loading = "lazy";
-    container.appendChild(img);
-    return;
+    return img;
   }
 
   if (kind === "Text") {
@@ -1205,49 +1209,57 @@ function buildMainContent(container, block) {
     const textContent = block.contentText || block.descriptionText || block.title || "Text";
     content.textContent = textContent.trim() || "Text";
     wrapper.appendChild(content);
-    container.appendChild(wrapper);
-    return;
+    return wrapper;
   }
 
   if (kind === "Link" && block.linkUrl) {
-    container.appendChild(createChip(formatLinkLabel(block.linkUrl)));
-    return;
+    return createChip(formatLinkLabel(block.linkUrl));
   }
 
   if (kind === "Attachment" && block.attachment?.url) {
     const name = block.attachment.fileName || block.title || "Attachment";
-    container.appendChild(createChip(name));
-    return;
+    return createChip(name);
   }
 
   if (kind === "Embed") {
     const label = block.embed?.type || block.title || "Embed";
-    container.appendChild(createChip(label));
-    return;
+    return createChip(label);
   }
 
   if (kind === "Channel") {
     if (block.counts?.contents) {
-      container.appendChild(createChip(formatCount(block.counts.contents, "item")));
-      return;
+      return createChip(formatCount(block.counts.contents, "item"));
     }
     if (block.owner?.name) {
-      container.appendChild(createChip(block.owner.name));
-      return;
+      return createChip(block.owner.name);
     }
     if (block.channel?.title) {
-      container.appendChild(createChip(block.channel.title));
-      return;
+      return createChip(block.channel.title);
     }
   }
 
   if (block.source?.provider?.name) {
-    container.appendChild(createChip(block.source.provider.name));
-    return;
+    return createChip(block.source.provider.name);
   }
 
   const fallback = block.descriptionText || block.title || "Untitled";
-  container.appendChild(createChip(fallback));
+  return createChip(fallback);
+}
+
+function wrapInArenaLink(node, arenaUrl) {
+  const link = document.createElement("a");
+  link.className = "block-main-link";
+  link.href = arenaUrl;
+  link.target = "_blank";
+  link.rel = "noopener";
+  // Text tiles are readable content: don't navigate when the click was the end of a drag-selection.
+  link.addEventListener("click", (event) => {
+    if (!window.getSelection()?.isCollapsed) {
+      event.preventDefault();
+    }
+  });
+  link.appendChild(node);
+  return link;
 }
 
 function createChip(label) {
