@@ -195,6 +195,7 @@ html[data-page-state="booting"] body[data-page="new-tab"] #app-shell {
 }
 
 #bookmark-strip {
+    position: relative;
     flex: 1 1 auto;
     width: 100%;
     display: flex;
@@ -251,10 +252,19 @@ html[data-page-state="booting"] body[data-page="new-tab"] #app-shell {
 }
 
 #launch-chips {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
+}
+
+/* once the strip scrolls there is no spare width to centre into, so rejoin the flow */
+#bookmark-strip.scrolling #launch-chips {
+    position: static;
+    transform: none;
 }
 
 body[data-view="bookmarks"] #launch-chips {
@@ -417,6 +427,243 @@ body[data-view="bookmarks"] #content-area {
 }
 
 #bm-manage-errors[hidden] {
+    display: none;
+}
+
+/* --- Bookmarks stack (main + archive cards) -------------------------------- */
+#bm-stack {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    padding: 10px 12px 16px;
+}
+
+#bm-stack[hidden] {
+    display: none;
+}
+
+.bm-card-surface {
+    position: absolute;
+    inset: 10px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--block-border);
+    /* three planes: page bg, card, then the blocks inside it */
+    background: var(--header-bg);
+    box-shadow: 0 8px 24px var(--shadow-color);
+    transform-origin: center bottom;
+    transition: transform 230ms ease-out, box-shadow 230ms ease-out;
+}
+
+.bm-card-surface.is-front {
+    z-index: 2;
+    transform: translateY(0) scale(1);
+}
+
+.bm-card-surface.is-back {
+    z-index: 1;
+    transform: translateY(18px) scale(0.985);
+    cursor: pointer;
+}
+
+.bm-card-surface.is-back .bm-card-scroll {
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.bm-card-bar {
+    display: flex;
+    flex: none;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--header-border);
+    background: var(--header-bg);
+}
+
+.bm-card-title {
+    color: var(--text-color);
+}
+
+.bm-card-meta {
+    font-size: 10px;
+    color: var(--meta-color);
+}
+
+.bm-breadcrumb {
+    color: var(--link-color);
+}
+
+.bm-card-scroll {
+    flex: 1;
+    min-height: 0;
+    padding: 14px 16px;
+    overflow-y: auto;
+}
+
+.bm-card-scroll--flush {
+    padding: 0;
+}
+
+.bm-section-title {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin: 4px 0 8px;
+    font-size: 12px;
+    font-weight: normal;
+    color: var(--meta-color);
+}
+
+.bm-section-title::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--internal-border);
+}
+
+.bm-pinned-block {
+    margin-bottom: 12px;
+    border: 1px solid var(--block-border);
+    background: var(--block-bg);
+}
+
+/* wide screens get more columns of links rather than stretched rows */
+.bm-pinned-rows {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+
+.bm-pinned-row {
+    border-right: 1px solid var(--internal-border);
+}
+
+.bm-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1.6fr;
+    min-height: 340px;
+    border: 1px solid var(--block-border);
+}
+
+.bm-card-scroll--flush .bm-columns {
+    height: 100%;
+    border: none;
+}
+
+.bm-col {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    border-right: 1px solid var(--internal-border);
+    background: var(--block-bg);
+}
+
+.bm-col:last-child {
+    border-right: none;
+}
+
+.bm-col-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--header-border);
+    background: var(--header-bg);
+    color: var(--meta-color);
+    font-size: 10px;
+}
+
+.bm-col-item,
+.bm-col-row {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    border-bottom: 1px solid var(--internal-border);
+    background: none;
+    color: var(--text-color);
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.bm-col-item:hover,
+.bm-col-row:hover {
+    background: var(--button-bg);
+}
+
+.bm-col-item.is-selected {
+    background: var(--button-bg);
+    color: var(--link-color);
+}
+
+.bm-col-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bm-col-item-count {
+    color: var(--meta-color);
+    font-size: 10px;
+}
+
+.bm-col-row-title {
+    overflow: hidden;
+    color: var(--link-color);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bm-new-pill {
+    flex: none;
+    min-width: 16px;
+    padding: 0 5px;
+    border: 1px solid var(--link-color);
+    color: var(--link-color);
+    font-size: 9px;
+    line-height: 14px;
+    /* counts sit in a column down the rows, so the digits must not reflow */
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    text-transform: lowercase;
+}
+
+.bm-pinned-row .bm-new-pill,
+.bm-col-row .bm-new-pill {
+    margin-left: auto;
+}
+
+.bm-col-item.has-new .bm-col-item-name {
+    color: var(--link-color);
+}
+
+.bm-col.is-idle {
+    background: var(--header-bg);
+}
+
+.bm-col-empty {
+    padding: 10px;
+    color: var(--meta-color);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bm-card-surface {
+        transition: none;
+    }
+}
+
+#bm-board[hidden] {
     display: none;
 }
 

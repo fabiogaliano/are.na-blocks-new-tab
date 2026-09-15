@@ -3,7 +3,12 @@ import { computeNewIds } from "./bookmarks-model.js";
 
 const normalizeState = (value) => ({
     lastViewedAt: Number.isFinite(Number(value?.lastViewedAt)) ? Number(value.lastViewedAt) : DEFAULT_BOOKMARK_STATE.lastViewedAt,
-    newIds: [...new Set(Array.isArray(value?.newIds) ? value.newIds.map(String) : [])]
+    newIds: [...new Set(Array.isArray(value?.newIds) ? value.newIds.map(String) : [])],
+    // Keyed by url, not bookmark id: re-filing a link into another folder gives it a
+    // new id, and that should not reset how much of the site you have already read.
+    openedAt: value?.openedAt && typeof value.openedAt === "object"
+        ? Object.fromEntries(Object.entries(value.openedAt).map(([url, at]) => [url, Number(at) || 0]))
+        : {}
 });
 
 async function getStorage(storageApi) {
@@ -31,6 +36,34 @@ export function pruneNewIds(ids, links) {
     return [...new Set((ids || []).map(String))].filter((id) => present.has(id));
 }
 
+export function markOpenedState(state, urls, at = Date.now()) {
+    const openedAt = { ...state.openedAt };
+    for (const url of Array.isArray(urls) ? urls : [urls]) {
+        if (url) {
+            openedAt[url] = at;
+        }
+    }
+    return normalizeState({ ...state, openedAt });
+}
+
+// A link with no recorded visit would otherwise count every entry the feed carries,
+// so first sight is stamped as "read up to here" — the same way the first board open
+// seeds lastViewedAt instead of marking every existing bookmark new.
+export function seedOpenedAt(openedAt, links, at = Date.now()) {
+    const seeded = { ...openedAt };
+    for (const link of links || []) {
+        if (link.url && !(link.url in seeded)) {
+            seeded[link.url] = at;
+        }
+    }
+    return seeded;
+}
+
+export function pruneOpenedAt(openedAt, links) {
+    const present = new Set((links || []).map((link) => link.url));
+    return Object.fromEntries(Object.entries(openedAt || {}).filter(([url]) => present.has(url)));
+}
+
 export function markReadState(state, ids) {
     const read = new Set((Array.isArray(ids) ? ids : [ids]).map(String));
     return normalizeState({ ...state, newIds: state.newIds.filter((id) => !read.has(id)) });
@@ -51,6 +84,11 @@ export async function synchronizeNewMarkers(links, storageApi, at = Date.now()) 
 export async function markBoardOpened(openedAt = Date.now(), storageApi) {
     const current = await readBookmarkState(storageApi);
     return writeBookmarkState({ ...current, lastViewedAt: openedAt }, storageApi);
+}
+
+export async function markOpened(urls, at = Date.now(), storageApi) {
+    const current = await readBookmarkState(storageApi);
+    return writeBookmarkState(markOpenedState(current, urls, at), storageApi);
 }
 
 export async function markRead(ids, storageApi) {

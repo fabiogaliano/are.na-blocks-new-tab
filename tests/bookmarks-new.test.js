@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeNewIds } from "../extension/scripts/bookmarks-model.js";
-import { markReadState, pruneNewIds, synchronizeNewMarkers } from "../extension/scripts/bookmarks-state.js";
+import { markOpenedState, markReadState, pruneNewIds, pruneOpenedAt, seedOpenedAt, synchronizeNewMarkers } from "../extension/scripts/bookmarks-state.js";
 
 const links = [
     { id: "before", dateAdded: 99 },
@@ -25,7 +25,7 @@ describe("new bookmark markers", () => {
     it("seeds first run without marking existing links", async () => {
         const storage = memoryStorage();
         const state = await synchronizeNewMarkers(links, storage, 500);
-        expect(state).toEqual({ lastViewedAt: 500, newIds: [] });
+        expect(state).toEqual({ lastViewedAt: 500, newIds: [], openedAt: {} });
     });
 
     it("keeps unread ids after lastViewedAt advances", () => {
@@ -41,5 +41,33 @@ describe("new bookmark markers", () => {
         expect(markReadState(state, "after").newIds).toEqual(["before"]);
         expect(markReadState(markReadState(state, "after"), "after").newIds).toEqual(["before"]);
         expect(markReadState(state, ["before", "after"]).newIds).toEqual([]);
+    });
+});
+
+describe("per-link open timestamps", () => {
+    it("stamps every opened url", () => {
+        const state = markOpenedState({ lastViewedAt: 0, newIds: [], openedAt: {} }, ["a", "b"], 900);
+        expect(state.openedAt).toEqual({ a: 900, b: 900 });
+    });
+
+    it("overwrites an earlier open so only the latest visit counts", () => {
+        const first = markOpenedState({ lastViewedAt: 0, newIds: [], openedAt: {} }, ["a"], 100);
+        expect(markOpenedState(first, ["a"], 400).openedAt).toEqual({ a: 400 });
+    });
+
+    it("accepts a single url", () => {
+        expect(markOpenedState({ lastViewedAt: 0, newIds: [], openedAt: {} }, "a", 1).openedAt).toEqual({ a: 1 });
+    });
+
+    it("drops timestamps for links that no longer exist", () => {
+        expect(pruneOpenedAt({ a: 1, b: 2 }, [{ url: "b" }])).toEqual({ b: 2 });
+    });
+
+    it("seeds unseen links so a first run counts no backlog", () => {
+        expect(seedOpenedAt({}, [{ url: "a" }, { url: "b" }], 700)).toEqual({ a: 700, b: 700 });
+    });
+
+    it("leaves an already recorded visit alone", () => {
+        expect(seedOpenedAt({ a: 100 }, [{ url: "a" }, { url: "b" }], 700)).toEqual({ a: 100, b: 700 });
     });
 });

@@ -34,7 +34,29 @@
                     <button class="button" id="bm-manage-done" type="button">done</button>
                     <div id="bm-manage-errors" hidden></div>
                 </div>
-                <div id="bm-board"></div>
+                <div id="bm-stack">
+                    <section class="bm-card-surface is-front" id="bm-card-main" aria-label="Day to day bookmarks">
+                        <header class="bm-card-bar">
+                            <span class="bm-card-title">main — day to day</span>
+                            <span class="bm-card-meta" id="bm-main-meta"></span>
+                        </header>
+                        <div class="bm-card-scroll">
+                            <div id="bm-pinned"></div>
+                            <h2 class="bm-section-title">everything else — <span class="bm-breadcrumb" id="bm-main-crumb"></span></h2>
+                            <div class="bm-columns" id="bm-main-columns"></div>
+                        </div>
+                    </section>
+                    <section class="bm-card-surface is-back" id="bm-card-archive" aria-label="Archived bookmarks">
+                        <header class="bm-card-bar">
+                            <span class="bm-card-title">archive — <span class="bm-breadcrumb" id="bm-archive-crumb"></span></span>
+                            <span class="bm-card-meta" id="bm-archive-meta"></span>
+                        </header>
+                        <div class="bm-card-scroll bm-card-scroll--flush">
+                            <div class="bm-columns" id="bm-archive-columns"></div>
+                        </div>
+                    </section>
+                </div>
+                <div id="bm-board" hidden></div>
             </section>
         </main>
 

@@ -2,24 +2,34 @@ import { BOOKMARK_REFRESH_DEBOUNCE, STORAGE_KEYS, TRASH_TOAST_MS } from "./const
 import { addListenerSafe, bookmarks, storage } from "./extension-api.js";
 import { applyFavicon } from "./bookmark-favicon.js";
 import { createBoard } from "./bookmarks-board.js";
-import { buildBoard } from "./bookmarks-model.js";
+import { createColumns, createNewPill } from "./bookmarks-columns.js";
+import { createStack } from "./bookmarks-stack.js";
+import { buildBoard, buildSurfaces } from "./bookmarks-model.js";
 import { openLinks } from "./bookmarks-open.js";
-import { markBoardOpened, markRead, pruneNewIds, synchronizeNewMarkers, writeBookmarkState } from "./bookmarks-state.js";
+import { markBoardOpened, markOpened, markRead, pruneNewIds, pruneOpenedAt, seedOpenedAt, synchronizeNewMarkers, writeBookmarkState } from "./bookmarks-state.js";
+import { freshCountForLink } from "./feeds.js";
+import { loadFeedMap } from "./feed-poll.js";
+import { getFeedState } from "./storage.js";
 import { deleteNodes, restoreEntry } from "./bookmarks-trash.js";
 import { createMarquee, pruneSelection, toggle } from "./bookmarks-select.js";
 import { createPalette } from "./bookmarks-palette.js";
 import { applyQueue, describeQueue, queueOp, reduceQueue } from "./bookmarks-manage.js";
 
+const LAUNCH_CHIP_CLEARANCE = 16;
+
 export function createBookmarksView({ root, blocksView, boardContainer, strip, summary, settings }) {
     let currentSettings = settings;
     let model = null;
+    let surfaces = { pinned: [], main: [], archive: [] };
     let mounted = false;
     let visible = false;
     let refreshTimer = null;
     let stale = false;
     let openedInThisTab = false;
     let markersSynchronized = false;
-    let bookmarkState = { lastViewedAt: 0, newIds: [] };
+    let bookmarkState = { lastViewedAt: 0, newIds: [], openedAt: {} };
+    let feedMap = {};
+    let feedEntries = {};
     let selection = new Set();
     let suppressEvents = 0;
     let pendingRefresh = false;
@@ -54,6 +64,23 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     const manageDoneButton = document.getElementById("bm-manage-done");
     const manageErrors = document.getElementById("bm-manage-errors");
     const paletteOverlay = document.getElementById("bm-palette");
+    const stackRoot = document.getElementById("bm-stack");
+    const pinnedContainer = document.getElementById("bm-pinned");
+    const mainColumnsEl = document.getElementById("bm-main-columns");
+    const archiveColumnsEl = document.getElementById("bm-archive-columns");
+    const mainCrumb = document.getElementById("bm-main-crumb");
+    const archiveCrumb = document.getElementById("bm-archive-crumb");
+    const mainMeta = document.getElementById("bm-main-meta");
+    const archiveMeta = document.getElementById("bm-archive-meta");
+    const mainColumns = mainColumnsEl
+        ? createColumns({ container: mainColumnsEl, breadcrumb: mainCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll })
+        : null;
+    const archiveColumns = archiveColumnsEl
+        ? createColumns({ container: archiveColumnsEl, breadcrumb: archiveCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll })
+        : null;
+    const stack = stackRoot
+        ? createStack({ cards: [document.getElementById("bm-card-main"), document.getElementById("bm-card-archive")] })
+        : null;
     const board = createBoard({ container: boardContainer, onOpen: handleOpen, onOpenAll: handleOpenAll, onManageAction: handleManageAction });
     const marquee = createMarquee({
         board: boardContainer,
@@ -105,9 +132,25 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
             anchor.append(favicon);
             launchList.append(anchor);
         }
-        requestAnimationFrame(() => {
-            strip.classList.toggle("scrolling", strip.scrollWidth > strip.clientWidth);
-        });
+        requestAnimationFrame(updateStripLayout);
+    }
+
+    // The chips are absolutely centred in the bar, so they only stay centred while
+    // they clear the view toggle on the left; otherwise they rejoin the flow and scroll.
+    function updateStripLayout() {
+        if (!launchList) {
+            return;
+        }
+        const chipsWidth = launchList.scrollWidth;
+        const available = strip.clientWidth;
+        let leftEnd = 0;
+        for (const child of strip.children) {
+            if (child !== launchList) {
+                leftEnd = Math.max(leftEnd, child.offsetLeft + child.offsetWidth);
+            }
+        }
+        const centred = chipsWidth <= available && (available - chipsWidth) / 2 >= leftEnd + LAUNCH_CHIP_CLEARANCE;
+        strip.classList.toggle("scrolling", !centred);
     }
 
     function renderSummary() {
@@ -297,6 +340,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
             manageErrors.textContent = "";
         }
         setManageUi(true);
+        setLayout(true);
         renderManageModel();
     }
 
@@ -304,6 +348,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         manageQueue = [];
         manageModel = null;
         setManageUi(false);
+        setLayout(false);
         if (stale) {
             await refresh();
         } else {
@@ -452,6 +497,12 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         newBadge.hidden = !bookmarkState.newIds.length;
     }
 
+    // Unread posts, not unread bookmarks: the pill counts feed entries published
+    // since you last opened that link, so a site you never visit keeps climbing.
+    function freshFor(link) {
+        return freshCountForLink(feedMap, feedEntries, link, bookmarkState.openedAt?.[link.url] || 0);
+    }
+
     async function markLinksRead(ids) {
         const targets = (Array.isArray(ids) ? ids : [ids]).map(String).filter((id) => bookmarkState.newIds.includes(id));
         if (!targets.length) {
@@ -475,14 +526,94 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         const result = await openLinks([link.url]);
         if (!result.cancelled) {
             await markLinksRead(link.id);
+            await markLinksOpened([link.url]);
         }
     }
 
     async function handleOpenAll(links) {
-        const result = await openLinks(links.map((link) => link.url));
+        const urls = links.map((link) => link.url);
+        const result = await openLinks(urls);
         if (!result.cancelled) {
             await markLinksRead(links.map((link) => link.id));
+            await markLinksOpened(urls);
         }
+    }
+
+    async function markLinksOpened(urls) {
+        bookmarkState = await markOpened(urls);
+        renderModel();
+    }
+
+    function setLayout(manageLayout) {
+        if (stackRoot) {
+            stackRoot.hidden = manageLayout;
+        }
+        boardContainer.hidden = !manageLayout;
+    }
+
+    function countLinks(nodes) {
+        return nodes.reduce((total, node) => total + node.count, 0);
+    }
+
+    function renderPinned() {
+        if (!pinnedContainer) {
+            return;
+        }
+        pinnedContainer.innerHTML = "";
+        for (const node of surfaces.pinned) {
+            const heading = document.createElement("h2");
+            heading.className = "bm-section-title";
+            heading.textContent = node.path.split("/").join(" — ");
+            const block = document.createElement("div");
+            block.className = "bm-pinned-block";
+            const rows = document.createElement("div");
+            rows.className = "bm-pinned-rows";
+            for (const link of node.links) {
+                rows.append(createPinnedRow(link));
+            }
+            block.append(rows);
+            pinnedContainer.append(heading, block);
+        }
+        if (mainMeta) {
+            mainMeta.textContent = surfaces.pinned
+                .map((node) => `${node.path} ${node.links.length}`)
+                .join(" · ");
+        }
+        if (archiveMeta) {
+            archiveMeta.textContent = `${surfaces.archive.length} folders · ${countLinks(surfaces.archive)} links`;
+        }
+    }
+
+    function createPinnedRow(link) {
+        const row = document.createElement("a");
+        row.className = "bm-row bm-pinned-row";
+        row.href = link.url;
+        row.target = "_blank";
+        row.rel = "noopener";
+        row.title = link.title;
+        row.dataset.bookmarkId = link.id;
+        const fresh = freshFor(link);
+        row.classList.toggle("bm-new-row", Boolean(fresh));
+        const favicon = document.createElement("img");
+        favicon.className = "bm-favicon";
+        favicon.alt = "";
+        favicon.loading = "lazy";
+        favicon.decoding = "async";
+        applyFavicon(favicon, link.url);
+        const title = document.createElement("span");
+        title.className = "bm-row-title";
+        title.textContent = link.title;
+        row.append(favicon, title);
+        if (fresh) {
+            row.append(createNewPill(document, `${fresh}`));
+        }
+        row.addEventListener("click", (event) => handleOpen(event, link, row));
+        row.addEventListener("auxclick", (event) => {
+            if (event.button === 1) {
+                handleOpen(event, link, row);
+            }
+        });
+        return row;
     }
 
     function renderModel() {
@@ -490,7 +621,9 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         if (managing && manageModel) {
             board.render(manageModel, [], { manage: true, pendingRemoveIds: pendingRemoveIds() });
         } else {
-            board.render(model, bookmarkState.newIds);
+            renderPinned();
+            mainColumns?.setNodes(surfaces.main, { freshFor });
+            archiveColumns?.setNodes(surfaces.archive, { freshFor });
         }
         root.dataset.renderMs = (performance.now() - startedAt).toFixed(2);
         if (summary && !statusActive) {
@@ -503,11 +636,13 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
 
     async function refresh() {
         if (!bookmarks) {
-            boardContainer.innerHTML = "";
+            // the flat board is hidden outside manage mode, so the notice goes on the visible card
+            const host = pinnedContainer || boardContainer;
+            host.innerHTML = "";
             const empty = document.createElement("div");
             empty.className = "bm-empty";
             empty.textContent = "Bookmarks unavailable";
-            boardContainer.append(empty);
+            host.append(empty);
             return;
         }
         const tree = await bookmarks.getTree();
@@ -516,12 +651,20 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
             hiddenFolders: currentSettings.hiddenFolders,
             launchFolder: currentSettings.launchFolder
         });
+        surfaces = buildSurfaces(tree, {
+            rootPath: currentSettings.bookmarksRootPath,
+            hiddenFolders: currentSettings.hiddenFolders,
+            pinnedFolders: currentSettings.pinnedFolders,
+            mainFolders: currentSettings.mainFolders
+        });
         stale = false;
         selection = pruneSelection(selection, model.links.map((link) => link.id));
         if (markersSynchronized) {
             const pruned = pruneNewIds(bookmarkState.newIds, model.links);
-            if (pruned.length !== bookmarkState.newIds.length) {
-                bookmarkState = await writeBookmarkState({ ...bookmarkState, newIds: pruned });
+            const openedAt = seedOpenedAt(pruneOpenedAt(bookmarkState.openedAt, model.links), model.links);
+            const openedChanged = Object.keys(openedAt).length !== Object.keys(bookmarkState.openedAt || {}).length;
+            if (pruned.length !== bookmarkState.newIds.length || openedChanged) {
+                bookmarkState = await writeBookmarkState({ ...bookmarkState, newIds: pruned, openedAt });
             }
         }
         renderModel();
@@ -542,13 +685,26 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     }
 
     function handleStorageChange(changes, area) {
-        if (area !== "local" || !changes[STORAGE_KEYS.bookmarkState]?.newValue) {
+        if (area !== "local") {
+            return;
+        }
+        if (changes[STORAGE_KEYS.feedState]?.newValue) {
+            feedEntries = changes[STORAGE_KEYS.feedState].newValue.entries || {};
+            if (model) {
+                renderModel();
+            }
+        }
+        if (!changes[STORAGE_KEYS.bookmarkState]?.newValue) {
             return;
         }
         const next = changes[STORAGE_KEYS.bookmarkState].newValue;
         const nextIds = pruneNewIds(next.newIds, model?.links || []);
         const unchanged = nextIds.length === bookmarkState.newIds.length && nextIds.every((id, index) => id === bookmarkState.newIds[index]);
-        bookmarkState = { lastViewedAt: Number(next.lastViewedAt || 0), newIds: nextIds };
+        bookmarkState = {
+            lastViewedAt: Number(next.lastViewedAt || 0),
+            newIds: nextIds,
+            openedAt: next.openedAt || {}
+        };
         if (!unchanged && model) {
             renderModel();
         } else {
@@ -612,10 +768,13 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         summary?.addEventListener("pointerenter", pauseStatusTimer);
         summary?.addEventListener("pointerleave", resumeStatusTimer);
         document.addEventListener("keydown", handleKeyDown);
+        document.defaultView?.addEventListener("resize", updateStripLayout);
         for (const event of bookmarkEvents) {
             addListenerSafe(event, scheduleRefresh);
         }
         storage.onChanged?.addListener(handleStorageChange);
+        setLayout(false);
+        [feedMap, { entries: feedEntries }] = await Promise.all([loadFeedMap(), getFeedState()]);
         await refresh();
         bookmarkState = await synchronizeNewMarkers(model.links);
         markersSynchronized = true;

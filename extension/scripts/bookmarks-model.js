@@ -170,6 +170,77 @@ export function buildBoard(tree, { rootPath = "", hiddenFolders = [], launchFold
     };
 }
 
+
+function buildNode(folder, parentPath, hiddenFolders) {
+    const rawTitle = folder.title ?? "";
+    const path = parentPath ? `${parentPath}/${rawTitle}` : normalizePath(rawTitle);
+    const links = [];
+    const children = [];
+    for (const child of folder.children || []) {
+        if (child.type === "separator") {
+            continue;
+        }
+        if (child.url) {
+            links.push(makeLink(child, path));
+            continue;
+        }
+        const node = buildNode(child, path, hiddenFolders);
+        if (node) {
+            children.push(node);
+        }
+    }
+    if (isHiddenPath(path, hiddenFolders)) {
+        return null;
+    }
+    return {
+        id: String(folder.id),
+        title: displayFolderTitle(rawTitle),
+        path,
+        links,
+        children,
+        count: links.length + children.reduce((total, child) => total + child.count, 0)
+    };
+}
+
+function findNode(nodes, path) {
+    const segments = normalizePath(path).toLowerCase().split("/").filter(Boolean);
+    let current = null;
+    let pool = nodes;
+    for (const segment of segments) {
+        current = pool.find((node) => normalizePath(node.path).toLowerCase().split("/").at(-1) === segment);
+        if (!current) {
+            return null;
+        }
+        pool = current.children;
+    }
+    return current;
+}
+
+// A top-level folder belongs to the archive card only when nothing claims it or anything below it,
+// so listing "reading/slow" on the main board does not drag all of "reading" along with it.
+function isClaimed(node, claimedPaths) {
+    const path = normalizePath(node.path).toLowerCase();
+    return claimedPaths.some((claimed) => claimed === path || claimed.startsWith(`${path}/`));
+}
+
+export function buildSurfaces(tree, { rootPath = "", hiddenFolders = [], pinnedFolders = [], mainFolders = [] } = {}) {
+    const root = resolveRoot(tree, rootPath);
+    if (!root) {
+        return { pinned: [], main: [], archive: [] };
+    }
+    const nodes = (root.children || [])
+        .filter((child) => !child.url && child.type !== "separator")
+        .map((child) => buildNode(child, "", hiddenFolders))
+        .filter(Boolean);
+
+    const resolve = (paths) => paths.map((path) => findNode(nodes, path)).filter(Boolean);
+    const pinned = resolve(pinnedFolders);
+    const main = resolve(mainFolders);
+    const claimed = [...pinnedFolders, ...mainFolders].map((path) => normalizePath(path).toLowerCase()).filter(Boolean);
+    const archive = nodes.filter((node) => !isClaimed(node, claimed));
+    return { pinned, main, archive };
+}
+
 export function computeNewIds({ links = [], lastViewedAt = 0, knownNewIds = [] }) {
     const present = new Set(links.map((link) => String(link.id)));
     const accumulated = new Set((knownNewIds || []).map(String).filter((id) => present.has(id)));

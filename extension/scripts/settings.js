@@ -97,6 +97,8 @@ const elements = {
     bookmarksRoot: document.getElementById("bookmarks-root"),
     hiddenFolders: document.getElementById("hidden-folders"),
     launchFolder: document.getElementById("launch-folder"),
+    pinnedFolders: document.getElementById("pinned-folders"),
+    mainFolders: document.getElementById("main-folders"),
     bookmarksSaveButton: document.getElementById("save-bookmarks"),
     resetNewMarkersButton: document.getElementById("reset-new-markers"),
     bookmarkTrash: document.getElementById("bookmark-trash"),
@@ -258,6 +260,12 @@ function populateForm(settings = state.settings) {
     if (elements.launchFolder) {
         elements.launchFolder.value = settings.launchFolder;
     }
+    if (elements.pinnedFolders) {
+        elements.pinnedFolders.value = settings.pinnedFolders.join("\n");
+    }
+    if (elements.mainFolders) {
+        elements.mainFolders.value = settings.mainFolders.join("\n");
+    }
 
     renderAccountCatalog(new Set(settings.accountChannelSlugs));
 }
@@ -319,7 +327,7 @@ function wireEvents() {
         scrollToSettingsSection(readSectionFromHash(), { behavior: getSettingsScrollBehavior(), updateHash: false });
     });
 
-    [elements.channelSlugs, elements.blockIds, elements.showHeader, elements.showFooter, elements.includeFeed, elements.bookmarksRoot, elements.hiddenFolders, elements.launchFolder].forEach((control) => {
+    [elements.channelSlugs, elements.blockIds, elements.showHeader, elements.showFooter, elements.includeFeed, elements.bookmarksRoot, elements.hiddenFolders, elements.launchFolder, elements.pinnedFolders, elements.mainFolders].forEach((control) => {
         control?.addEventListener("input", updateDirtyState);
         control?.addEventListener("change", updateDirtyState);
     });
@@ -443,7 +451,9 @@ function gatherBookmarkSettings() {
     return {
         bookmarksRootPath: elements.bookmarksRoot?.value || "",
         hiddenFolders: elements.hiddenFolders?.value || "",
-        launchFolder: elements.launchFolder?.value || ""
+        launchFolder: elements.launchFolder?.value || "",
+        pinnedFolders: elements.pinnedFolders?.value || "",
+        mainFolders: elements.mainFolders?.value || ""
     };
 }
 

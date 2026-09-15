@@ -65,10 +65,12 @@ export const DEFAULT_SETTINGS = {
     blockMetaFields: ["title", "description", "createdAt", "blockId", "type"],
     bookmarksRootPath: "",
     hiddenFolders: ["archive", "to move"],
-    launchFolder: "launch"
+    launchFolder: "launch",
+    pinnedFolders: ["reading/daily", "reading/curated"],
+    mainFolders: ["people", "reading/slow", "dev", "design", "learning", "mac & terminal", "film", "tana"]
 };
 
-export const DEFAULT_BOOKMARK_STATE = { lastViewedAt: 0, newIds: [] };
+export const DEFAULT_BOOKMARK_STATE = { lastViewedAt: 0, newIds: [], openedAt: {} };
 export const DEFAULT_FEED_STATE = { entries: {}, lastRunAt: 0 };
 
 // One alarm covers a slice of the feed list rather than all of it: the worker is

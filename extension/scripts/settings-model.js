@@ -15,9 +15,11 @@ const DISPLAY_FIELDS = [
     "blockMetaFields",
     "bookmarksRootPath",
     "hiddenFolders",
-    "launchFolder"
+    "launchFolder",
+    "pinnedFolders",
+    "mainFolders"
 ];
-const ARRAY_FIELDS = new Set(["channelSlugs", "blockIds", "filters", "accountChannelSlugs", "blockMetaFields", "hiddenFolders"]);
+const ARRAY_FIELDS = new Set(["channelSlugs", "blockIds", "filters", "accountChannelSlugs", "blockMetaFields", "hiddenFolders", "pinnedFolders", "mainFolders"]);
 const SET_FIELDS = new Set(["filters", "accountChannelSlugs", "blockMetaFields", "hiddenFolders"]);
 const THEMES = ["system", "light", "dark"];
 
@@ -56,6 +58,12 @@ export const normalizeFolderPath = (value) => `${value ?? ""}`
     .filter(Boolean)
     .join("/");
 
+export const normalizeFolderList = (value) => unique(
+    (Array.isArray(value) ? value : `${value ?? ""}`.split("\n"))
+        .map(normalizeFolderPath)
+        .filter(Boolean)
+);
+
 export const normalizeHiddenFolders = (value) => unique(
     (Array.isArray(value) ? value : `${value ?? ""}`.split("\n"))
         .map(normalizeFolderPath)
@@ -86,7 +94,9 @@ export const canonicalizeSettings = (value = DEFAULT_SETTINGS) => {
         blockMetaFields: normalizeBlockMetaFields(source.blockMetaFields),
         bookmarksRootPath: normalizeFolderPath(source.bookmarksRootPath ?? DEFAULT_SETTINGS.bookmarksRootPath),
         hiddenFolders: normalizeHiddenFolders(source.hiddenFolders ?? DEFAULT_SETTINGS.hiddenFolders),
-        launchFolder: normalizeFolderPath(source.launchFolder ?? DEFAULT_SETTINGS.launchFolder)
+        launchFolder: normalizeFolderPath(source.launchFolder ?? DEFAULT_SETTINGS.launchFolder),
+        pinnedFolders: normalizeFolderList(source.pinnedFolders ?? DEFAULT_SETTINGS.pinnedFolders),
+        mainFolders: normalizeFolderList(source.mainFolders ?? DEFAULT_SETTINGS.mainFolders)
     };
 };
 
