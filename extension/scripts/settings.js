@@ -1,5 +1,5 @@
 import { BLOCK_TYPES, CACHE_STATE, DEFAULT_SETTINGS, STORAGE_KEYS, TILE_SIZE_OPTIONS } from "./constants.js";
-import { storage } from "./extension-api.js";
+import { bookmarks, storage } from "./extension-api.js";
 import {
     clearArenaAuth,
     clearCache,
@@ -16,6 +16,9 @@ import { applyTheme } from "./theme.js";
 import { formatCountdown, formatRelativeTime } from "./time.js";
 import { getRequestBudget } from "./rate-limiter.js";
 import { runtimeCacheLifecycle } from "./cache-refresh.js";
+import { applyPlan, resolvePlan, validatePlan } from "./bookmark-plan-runner.js";
+import { clearTrash, readTrash, restoreEntry } from "./bookmarks-trash.js";
+import { resetNewMarkers } from "./bookmarks-state.js";
 
 const EMPTY_AUTH = { token: "", user: null };
 
@@ -38,7 +41,9 @@ const state = {
     catalogLoaded: false,
     working: false,
     sourcesDirty: false,
-    displayDirty: false
+    displayDirty: false,
+    resolvedPlan: null,
+    bookmarkTrash: []
 };
 
 let settingsScrollFrame = null;
@@ -88,7 +93,29 @@ const elements = {
     followedChannelPicker: document.getElementById("followed-channel-picker"),
     accountChannelNote: document.getElementById("account-channel-note"),
     accountCostNote: document.getElementById("account-cost-note"),
-    rateLimitInfo: document.getElementById("rate-limit-info")
+    rateLimitInfo: document.getElementById("rate-limit-info"),
+    bookmarksRoot: document.getElementById("bookmarks-root"),
+    hiddenFolders: document.getElementById("hidden-folders"),
+    launchFolder: document.getElementById("launch-folder"),
+    bookmarksSaveButton: document.getElementById("save-bookmarks"),
+    resetNewMarkersButton: document.getElementById("reset-new-markers"),
+    bookmarkTrash: document.getElementById("bookmark-trash"),
+    clearTrashButton: document.getElementById("clear-trash"),
+    planJson: document.getElementById("plan-json"),
+    planFile: document.getElementById("plan-file"),
+    dryRunPlanButton: document.getElementById("dry-run-plan"),
+    planStatus: document.getElementById("plan-status"),
+    planPreview: document.getElementById("plan-preview"),
+    planRoot: document.getElementById("plan-root"),
+    planSummary: document.getElementById("plan-summary"),
+    planTargets: document.getElementById("plan-targets"),
+    planRemovals: document.getElementById("plan-removals"),
+    planWarnings: document.getElementById("plan-warnings"),
+    applyHiddenFolders: document.getElementById("apply-hidden-folders"),
+    removeSourceFolder: document.getElementById("remove-source-folder"),
+    removeSourceLabel: document.getElementById("remove-source-label"),
+    applyPlanButton: document.getElementById("apply-plan"),
+    planResult: document.getElementById("plan-result")
 };
 
 let cacheCooldownTimer = null;
@@ -136,6 +163,7 @@ const sanitizeErrorLabel = (message) => {
 async function init() {
     try {
         await hydrateState();
+        await Promise.all([populateBookmarkRoots(), renderBookmarkTrash()]);
         populateForm();
         updateTheme(getSelectedTheme());
         updateCacheInfo();
@@ -220,6 +248,16 @@ function populateForm(settings = state.settings) {
         checkbox.checked = selectedMetaFields.has(checkbox.value);
     });
     updateSettingsAccessWarning();
+    if (elements.bookmarksRoot) {
+        ensureBookmarkRootOption(settings.bookmarksRootPath);
+        elements.bookmarksRoot.value = settings.bookmarksRootPath;
+    }
+    if (elements.hiddenFolders) {
+        elements.hiddenFolders.value = settings.hiddenFolders.join("\n");
+    }
+    if (elements.launchFolder) {
+        elements.launchFolder.value = settings.launchFolder;
+    }
 
     renderAccountCatalog(new Set(settings.accountChannelSlugs));
 }
@@ -259,6 +297,14 @@ function wireEvents() {
     elements.clearCacheCancelButton?.addEventListener("click", handleClearCacheCancel);
     elements.clearCacheConfirmButton?.addEventListener("click", handleClearCacheConfirm);
     elements.displaySaveButton?.addEventListener("click", handleDisplaySave);
+    elements.bookmarksSaveButton?.addEventListener("click", handleBookmarksSave);
+    elements.resetNewMarkersButton?.addEventListener("click", handleResetNewMarkers);
+    elements.clearTrashButton?.addEventListener("click", handleClearTrash);
+    elements.bookmarkTrash?.addEventListener("click", handleTrashClick);
+    elements.planJson?.addEventListener("input", invalidatePlanPreview);
+    elements.planFile?.addEventListener("change", handlePlanFile);
+    elements.dryRunPlanButton?.addEventListener("click", handlePlanDryRun);
+    elements.applyPlanButton?.addEventListener("click", handlePlanApply);
     elements.backButton?.addEventListener("click", handleBack);
     elements.saveAllButton?.addEventListener("click", handleSaveAll);
     elements.connectArenaButton?.addEventListener("click", handleConnectArena);
@@ -273,7 +319,7 @@ function wireEvents() {
         scrollToSettingsSection(readSectionFromHash(), { behavior: getSettingsScrollBehavior(), updateHash: false });
     });
 
-    [elements.channelSlugs, elements.blockIds, elements.showHeader, elements.showFooter, elements.includeFeed].forEach((control) => {
+    [elements.channelSlugs, elements.blockIds, elements.showHeader, elements.showFooter, elements.includeFeed, elements.bookmarksRoot, elements.hiddenFolders, elements.launchFolder].forEach((control) => {
         control?.addEventListener("input", updateDirtyState);
         control?.addEventListener("change", updateDirtyState);
     });
@@ -393,10 +439,356 @@ function gatherBarLayout() {
     return barEditor.read();
 }
 
+function gatherBookmarkSettings() {
+    return {
+        bookmarksRootPath: elements.bookmarksRoot?.value || "",
+        hiddenFolders: elements.hiddenFolders?.value || "",
+        launchFolder: elements.launchFolder?.value || ""
+    };
+}
+
 const gatherFormSettings = () => ({
     ...gatherSourceSettings(),
-    ...gatherDisplaySettings()
+    ...gatherDisplaySettings(),
+    ...gatherBookmarkSettings()
 });
+
+function findBookmarksBar(tree) {
+    const root = tree?.[0];
+    return root?.children?.find((node) => String(node.id) === "1")
+        || root?.children?.find((node) => /bookmark/i.test(node.title || ""))
+        || root?.children?.[0]
+        || null;
+}
+
+function ensureBookmarkRootOption(path) {
+    if (!elements.bookmarksRoot || !path || Array.from(elements.bookmarksRoot.options).some((option) => option.value === path)) {
+        return;
+    }
+    elements.bookmarksRoot.add(new Option(path, path));
+}
+
+async function populateBookmarkRoots() {
+    if (!elements.bookmarksRoot) {
+        return;
+    }
+    elements.bookmarksRoot.innerHTML = "";
+    elements.bookmarksRoot.add(new Option("Bookmarks bar", ""));
+    if (!bookmarks) {
+        elements.bookmarksRoot.disabled = true;
+        return;
+    }
+    const tree = await bookmarks.getTree();
+    const bar = findBookmarksBar(tree);
+    for (const child of bar?.children || []) {
+        if (!child.url && child.type !== "separator") {
+            elements.bookmarksRoot.add(new Option(child.title || "(untitled)", child.title || ""));
+        }
+    }
+}
+
+async function resolveBoardRootId() {
+    const tree = await bookmarks.getTree();
+    let current = findBookmarksBar(tree);
+    for (const segment of (state.settings.bookmarksRootPath || "").split("/").filter(Boolean)) {
+        current = current?.children?.find((child) => !child.url && `${child.title || ""}`.toLowerCase() === segment.toLowerCase());
+        if (!current) {
+            return String(findBookmarksBar(tree)?.id || "1");
+        }
+    }
+    return String(current?.id || "1");
+}
+
+async function handleBookmarksSave(event) {
+    event.preventDefault();
+    if (state.working) {
+        return;
+    }
+    const nextSettings = { ...state.settings, ...gatherBookmarkSettings() };
+    if (!classifySettingsChanges(nextSettings, state.settings).changed) {
+        showStatus("Bookmark settings are already saved.");
+        return;
+    }
+    updateWorking(true, "Saving bookmark settings...");
+    try {
+        state.settings = await saveSettings(nextSettings);
+        populateForm();
+        updateDirtyState();
+        showStatus("Bookmark settings saved.");
+    } catch (error) {
+        showStatus(`Save failed: ${sanitizeErrorLabel(error.message)}`);
+    } finally {
+        updateWorking(false);
+    }
+}
+
+async function handleResetNewMarkers(event) {
+    event.preventDefault();
+    updateWorking(true, "Clearing new markers...");
+    try {
+        await resetNewMarkers();
+        showStatus("New markers cleared.");
+    } catch (error) {
+        showStatus(`Reset failed: ${sanitizeErrorLabel(error.message)}`);
+    } finally {
+        updateWorking(false);
+    }
+}
+
+async function renderBookmarkTrash() {
+    if (!elements.bookmarkTrash) {
+        return;
+    }
+    const trash = await readTrash();
+    state.bookmarkTrash = trash.entries;
+    elements.bookmarkTrash.innerHTML = "";
+    if (!trash.entries.length) {
+        const empty = document.createElement("li");
+        empty.className = "bookmark-trash-empty";
+        empty.textContent = "Nothing deleted yet.";
+        elements.bookmarkTrash.append(empty);
+        if (elements.clearTrashButton) {
+            elements.clearTrashButton.disabled = true;
+        }
+        return;
+    }
+    if (elements.clearTrashButton) {
+        elements.clearTrashButton.disabled = false;
+    }
+    for (const entry of trash.entries) {
+        const item = document.createElement("li");
+        const label = document.createElement("span");
+        label.textContent = `${entry.label} · ${formatRelativeTime(entry.deletedAt)}`;
+        const restore = document.createElement("button");
+        restore.className = "button";
+        restore.type = "button";
+        restore.dataset.restoreTrash = entry.id;
+        restore.textContent = "restore";
+        item.append(label, restore);
+        elements.bookmarkTrash.append(item);
+    }
+}
+
+async function handleTrashClick(event) {
+    const button = event.target.closest("[data-restore-trash]");
+    if (!button || state.working || !bookmarks) {
+        return;
+    }
+    const entry = state.bookmarkTrash.find((candidate) => candidate.id === button.dataset.restoreTrash);
+    if (!entry) {
+        return;
+    }
+    updateWorking(true, "Restoring bookmarks...");
+    try {
+        const rootId = await resolveBoardRootId();
+        const result = await restoreEntry(entry, bookmarks, { rootId });
+        const orphanNote = result.orphaned ? ` · ${result.orphaned} to the board root, folder gone` : "";
+        showStatus(`${result.created.length} restored${orphanNote}.`);
+        await renderBookmarkTrash();
+    } catch (error) {
+        showStatus(`Restore failed: ${sanitizeErrorLabel(error.message)}`);
+    } finally {
+        updateWorking(false);
+    }
+}
+
+async function handleClearTrash(event) {
+    event.preventDefault();
+    if (state.working || !state.bookmarkTrash.length || !window.confirm("Clear deleted bookmarks permanently?")) {
+        return;
+    }
+    updateWorking(true, "Clearing bookmark trash...");
+    try {
+        await clearTrash();
+        await renderBookmarkTrash();
+        showStatus("Bookmark trash cleared.");
+    } catch (error) {
+        showStatus(`Clear failed: ${sanitizeErrorLabel(error.message)}`);
+    } finally {
+        updateWorking(false);
+    }
+}
+
+function invalidatePlanPreview() {
+    state.resolvedPlan = null;
+    if (elements.applyPlanButton) {
+        elements.applyPlanButton.disabled = true;
+    }
+    if (elements.planPreview) {
+        elements.planPreview.hidden = true;
+    }
+    if (elements.planResult) {
+        elements.planResult.textContent = "";
+    }
+}
+
+async function handlePlanFile(event) {
+    const [file] = event.target.files || [];
+    if (!file) {
+        return;
+    }
+    elements.planJson.value = await file.text();
+    invalidatePlanPreview();
+    elements.planStatus.textContent = `Loaded ${file.name}. Run a dry run to continue.`;
+}
+
+function hostLabel(url) {
+    try {
+        return new URL(url).host;
+    } catch {
+        return url || "";
+    }
+}
+
+function isHiddenTarget(path, hiddenFolders) {
+    const candidate = path.toLowerCase();
+    return hiddenFolders.some((hidden) => candidate === hidden || candidate.startsWith(`${hidden}/`));
+}
+
+function renderPlanPreview(plan, resolved) {
+    const summary = resolved.summary;
+    const hiddenFolders = (plan.hiddenFolders || []).map((path) => path.toLowerCase());
+    const hiddenMoves = summary.targets.filter((target) => isHiddenTarget(target.path, hiddenFolders)).reduce((total, target) => total + target.moves, 0);
+    elements.planRoot.textContent = `Root: ${plan.sourceFolder || plan.space || "Bookmarks bar"}`;
+    elements.planSummary.textContent = `${summary.folderCount} folders to ensure (${summary.newFolderCount} new) · Moves: ${summary.moves} · already in place: ${summary.alreadyInPlace} · matched by url: ${summary.matchedByUrl} · Removes: ${summary.removes} · Skipped: ${summary.skipped}`;
+    elements.planTargets.innerHTML = "";
+    for (const target of summary.targets) {
+        const row = document.createElement("tr");
+        const path = document.createElement("td");
+        const moves = document.createElement("td");
+        const status = document.createElement("td");
+        path.textContent = target.path;
+        moves.textContent = String(target.moves);
+        status.textContent = isHiddenTarget(target.path, hiddenFolders) ? "hidden" : target.isNew ? "new" : "exists";
+        row.append(path, moves, status);
+        elements.planTargets.append(row);
+    }
+    elements.planRemovals.innerHTML = "";
+    if (summary.removals.length) {
+        const heading = document.createElement("p");
+        heading.textContent = `Removals · ${summary.removals.length}`;
+        const list = document.createElement("ul");
+        for (const removal of summary.removals) {
+            const item = document.createElement("li");
+            item.textContent = `${removal.reason} · ${removal.title} · ${hostLabel(removal.url)}`;
+            list.append(item);
+        }
+        elements.planRemovals.append(heading, list);
+    }
+    elements.planWarnings.innerHTML = "";
+    for (const warning of resolved.warnings) {
+        const item = document.createElement("li");
+        item.textContent = `${warning.reason} · ${warning.title || warning.id}`;
+        elements.planWarnings.append(item);
+    }
+    if (hiddenMoves) {
+        const item = document.createElement("li");
+        item.textContent = `hidden — ${hiddenMoves} links will not appear on the board`;
+        elements.planWarnings.append(item);
+    }
+    elements.applyHiddenFolders.checked = true;
+    elements.applyHiddenFolders.parentElement.hidden = !plan.hiddenFolders?.length;
+    elements.removeSourceFolder.checked = true;
+    elements.removeSourceFolder.parentElement.hidden = !plan.sourceFolder;
+    elements.removeSourceLabel.textContent = `remove the emptied source folder "${plan.sourceFolder || ""}"`;
+    elements.planPreview.hidden = false;
+}
+
+async function handlePlanDryRun(event) {
+    event.preventDefault();
+    invalidatePlanPreview();
+    if (!bookmarks) {
+        elements.planStatus.textContent = "Bookmarks unavailable.";
+        return;
+    }
+    let plan;
+    try {
+        plan = JSON.parse(elements.planJson.value);
+    } catch (error) {
+        elements.planStatus.textContent = `Invalid JSON: ${sanitizeErrorLabel(error.message)}`;
+        return;
+    }
+    const validation = validatePlan(plan);
+    if (!validation.ok) {
+        elements.planStatus.textContent = validation.errors.join(" ");
+        return;
+    }
+    updateWorking(true, "Reading bookmarks for dry run...");
+    try {
+        const tree = await bookmarks.getTree();
+        const bar = findBookmarksBar(tree);
+        const resolved = resolvePlan(plan, tree, { rootId: String(bar.id) });
+        if (resolved.errors.length) {
+            elements.planStatus.textContent = resolved.errors.join(" ");
+            return;
+        }
+        state.resolvedPlan = { plan, resolved };
+        renderPlanPreview(plan, resolved);
+        elements.planStatus.textContent = `Dry run ready · ${resolved.summary.moves} moves · ${resolved.summary.removes} removes · ${resolved.errors.length} errors.`;
+    } catch (error) {
+        elements.planStatus.textContent = `Dry run failed: ${sanitizeErrorLabel(error.message)}`;
+    } finally {
+        updateWorking(false);
+        elements.applyPlanButton.disabled = !state.resolvedPlan;
+    }
+}
+
+function subtreeLinkCount(node) {
+    return node?.url ? 1 : (node?.children || []).reduce((total, child) => total + subtreeLinkCount(child), 0);
+}
+
+async function removeDrainedSource(plan) {
+    if (!elements.removeSourceFolder.checked || !plan.sourceFolder) {
+        return "";
+    }
+    const tree = await bookmarks.getTree();
+    const bar = findBookmarksBar(tree);
+    const source = bar?.children?.find((child) => !child.url && `${child.title || ""}`.toLowerCase() === plan.sourceFolder.toLowerCase());
+    if (!source) {
+        return "";
+    }
+    const remaining = subtreeLinkCount(source);
+    if (remaining) {
+        return ` · source folder kept with ${remaining} remaining`;
+    }
+    await bookmarks.removeTree(String(source.id));
+    return ` · removed ${plan.sourceFolder}`;
+}
+
+async function handlePlanApply(event) {
+    event.preventDefault();
+    if (state.working || !state.resolvedPlan || !bookmarks) {
+        return;
+    }
+    const { plan, resolved } = state.resolvedPlan;
+    updateWorking(true, "Applying bookmark plan...");
+    try {
+        const result = await applyPlan(resolved, bookmarks, (done, total) => {
+            elements.planStatus.textContent = `applying ${done}/${total}`;
+        });
+        let sourceNote = "";
+        if (!result.failed) {
+            sourceNote = await removeDrainedSource(plan);
+            if (elements.applyHiddenFolders.checked && plan.hiddenFolders?.length) {
+                state.settings = await saveSettings({ ...state.settings, hiddenFolders: plan.hiddenFolders });
+                populateForm();
+            }
+        }
+        elements.planResult.textContent = `Applied ${result.applied} of ${result.applied + result.failed} · ${result.failed} failed${sourceNote}.`;
+        elements.planStatus.textContent = result.failed ? result.errors.map((error) => error.message).join(" · ") : "Plan applied.";
+        await Promise.all([populateBookmarkRoots(), renderBookmarkTrash()]);
+        ensureBookmarkRootOption(state.settings.bookmarksRootPath);
+        elements.bookmarksRoot.value = state.settings.bookmarksRootPath;
+        updateDirtyState();
+        state.resolvedPlan = null;
+        elements.applyPlanButton.disabled = true;
+    } catch (error) {
+        elements.planResult.textContent = `Apply failed: ${sanitizeErrorLabel(error.message)}`;
+    } finally {
+        updateWorking(false);
+        elements.applyPlanButton.disabled = true;
+    }
+}
 
 async function handleDisplaySave(event) {
     event.preventDefault();
@@ -913,6 +1305,9 @@ function handleStorageChange(changes, area) {
         renderRateLimitInfo();
         updateAccountCostNote(new Set(getSelectedAccountChannelSlugs()));
     }
+    if (changes[STORAGE_KEYS.bookmarkTrash]) {
+        renderBookmarkTrash();
+    }
     if (changes[STORAGE_KEYS.settings] && !state.working && !state.sourcesDirty && !state.displayDirty) {
         getSettings().then((settings) => {
             state.settings = settings;
@@ -945,6 +1340,7 @@ function updateDirtyState() {
     const anyDirty = changes.changed;
     elements.sourceSaveButtons.forEach((button) => button.classList.toggle("is-dirty", state.sourcesDirty));
     elements.displaySaveButton?.classList.toggle("is-dirty", state.displayDirty);
+    elements.bookmarksSaveButton?.classList.toggle("is-dirty", state.displayDirty);
     elements.saveAllButton?.classList.toggle("is-dirty", anyDirty);
     elements.unsavedIndicator?.classList.toggle("hidden", !anyDirty);
     if (anyDirty) {

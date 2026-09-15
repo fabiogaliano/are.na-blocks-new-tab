@@ -25,6 +25,7 @@
                         <a class="settings-nav-button is-active" href="#sources" data-settings-nav="sources" aria-current="location">Sources</a>
                         <a class="settings-nav-button" href="#account" data-settings-nav="account">Are.na account</a>
                         <a class="settings-nav-button" href="#display" data-settings-nav="display">Display</a>
+                        <a class="settings-nav-button" href="#bookmarks" data-settings-nav="bookmarks">Bookmarks</a>
                         <a class="settings-nav-button" href="#about" data-settings-nav="about">About</a>
                     </nav>
 
@@ -239,6 +240,67 @@
                                 <button class="button" type="button" id="save-display">Save display settings</button>
                                 <button class="button" type="reset">Reset to defaults</button>
                             </div>
+                        </section>
+
+                        <section class="settings-page" id="bookmarks" data-settings-page="bookmarks" aria-labelledby="bookmarks-heading">
+                            <h2 class="settings-section-heading" id="bookmarks-heading">Bookmarks</h2>
+                            <fieldset>
+                                <legend>Board folders</legend>
+                                <label class="setting-label" for="bookmarks-root">Board root</label>
+                                <select id="bookmarks-root" name="bookmarksRootPath">
+                                    <option value="">Bookmarks bar</option>
+                                </select>
+
+                                <label class="setting-label" for="hidden-folders">Hidden folders</label>
+                                <textarea id="hidden-folders" name="hiddenFolders" placeholder="archive"></textarea>
+                                <span class="notice">Paths below the board root. Hides the folder and everything inside it.</span>
+
+                                <label class="setting-label" for="launch-folder">Launch folder</label>
+                                <input id="launch-folder" name="launchFolder" type="text" />
+                                <span class="notice">Its links become the favicon chips in the bar.</span>
+
+                                <div class="settings-actions settings-actions--compact">
+                                    <button class="button" id="save-bookmarks" type="button">Save bookmark settings</button>
+                                    <button class="button" id="reset-new-markers" type="button">Reset new markers</button>
+                                </div>
+                            </fieldset>
+
+                            <fieldset>
+                                <legend>Deleted bookmarks</legend>
+                                <ul class="bookmark-trash-list" id="bookmark-trash"></ul>
+                                <div class="settings-actions settings-actions--compact">
+                                    <button class="button button--danger-hover" id="clear-trash" type="button">Clear trash</button>
+                                </div>
+                            </fieldset>
+
+                            <fieldset>
+                                <legend>Apply plan</legend>
+                                <label class="setting-label" for="plan-json">Plan JSON</label>
+                                <textarea class="plan-json" id="plan-json" spellcheck="false"></textarea>
+                                <div class="settings-actions settings-actions--compact">
+                                    <label class="button file-button" for="plan-file">Load file…</label>
+                                    <input class="hidden" id="plan-file" type="file" accept=".json,application/json" />
+                                    <button class="button" id="dry-run-plan" type="button">Dry run</button>
+                                    <span class="notice" id="plan-status" aria-live="polite"></span>
+                                </div>
+
+                                <div class="plan-preview" id="plan-preview" hidden>
+                                    <p id="plan-root"></p>
+                                    <p id="plan-summary"></p>
+                                    <table class="plan-target-table">
+                                        <thead><tr><th>Target folder</th><th>Moves</th><th>State</th></tr></thead>
+                                        <tbody id="plan-targets"></tbody>
+                                    </table>
+                                    <div id="plan-removals"></div>
+                                    <ul class="plan-warning-list" id="plan-warnings"></ul>
+                                    <label class="inline"><input id="apply-hidden-folders" type="checkbox" checked /> <span>also apply hiddenFolders</span></label>
+                                    <label class="inline"><input id="remove-source-folder" type="checkbox" checked /> <span id="remove-source-label">remove the emptied source folder</span></label>
+                                    <div class="settings-actions settings-actions--compact">
+                                        <button class="button" id="apply-plan" type="button" disabled>Apply plan</button>
+                                        <span class="notice" id="plan-result" aria-live="polite"></span>
+                                    </div>
+                                </div>
+                            </fieldset>
                         </section>
 
                         <section class="settings-page" id="about" data-settings-page="about" aria-labelledby="about-heading">

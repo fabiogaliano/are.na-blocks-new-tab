@@ -12,10 +12,13 @@ const DISPLAY_FIELDS = [
     "barLayout",
     "dateFormat",
     "timeFormat",
-    "blockMetaFields"
+    "blockMetaFields",
+    "bookmarksRootPath",
+    "hiddenFolders",
+    "launchFolder"
 ];
-const ARRAY_FIELDS = new Set(["channelSlugs", "blockIds", "filters", "accountChannelSlugs", "blockMetaFields"]);
-const SET_FIELDS = new Set(["filters", "accountChannelSlugs", "blockMetaFields"]);
+const ARRAY_FIELDS = new Set(["channelSlugs", "blockIds", "filters", "accountChannelSlugs", "blockMetaFields", "hiddenFolders"]);
+const SET_FIELDS = new Set(["filters", "accountChannelSlugs", "blockMetaFields", "hiddenFolders"]);
 const THEMES = ["system", "light", "dark"];
 
 const unique = (values) => [...new Set(values)];
@@ -47,6 +50,19 @@ const normalizeBlockCount = (value) => {
 
 const normalizeBoolean = (value, fallback) => value === undefined ? fallback : Boolean(value);
 
+export const normalizeFolderPath = (value) => `${value ?? ""}`
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join("/");
+
+export const normalizeHiddenFolders = (value) => unique(
+    (Array.isArray(value) ? value : `${value ?? ""}`.split("\n"))
+        .map(normalizeFolderPath)
+        .map((path) => path.toLowerCase())
+        .filter(Boolean)
+);
+
 export const canonicalizeSettings = (value = DEFAULT_SETTINGS) => {
     const source = value && typeof value === "object" ? value : DEFAULT_SETTINGS;
     const filters = normalizeStringArray(source.filters).filter((filter) => BLOCK_TYPES.includes(filter));
@@ -67,7 +83,10 @@ export const canonicalizeSettings = (value = DEFAULT_SETTINGS) => {
         barLayout: normalizeBarLayout(source.barLayout),
         dateFormat: normalizeDateFormat(source.dateFormat),
         timeFormat: normalizeTimeFormat(source.timeFormat),
-        blockMetaFields: normalizeBlockMetaFields(source.blockMetaFields)
+        blockMetaFields: normalizeBlockMetaFields(source.blockMetaFields),
+        bookmarksRootPath: normalizeFolderPath(source.bookmarksRootPath ?? DEFAULT_SETTINGS.bookmarksRootPath),
+        hiddenFolders: normalizeHiddenFolders(source.hiddenFolders ?? DEFAULT_SETTINGS.hiddenFolders),
+        launchFolder: normalizeFolderPath(source.launchFolder ?? DEFAULT_SETTINGS.launchFolder)
     };
 };
 
