@@ -1,6 +1,6 @@
 import { CACHE_STATE, STORAGE_KEYS } from "./constants.js";
 import { formatCountdown, formatRelativeTime } from "./time.js";
-import { bookmarks, runtime, storage } from "./extension-api.js";
+import { storage } from "./extension-api.js";
 import { chooseRandomBlockIds } from "./arena.js";
 import { getBlocks } from "./block-store.js";
 import { getSettings } from "./storage.js";
@@ -10,15 +10,10 @@ import { getBlockMetaItems } from "./customization.js";
 import { createBarRenderer } from "./bar-customization.js";
 import { createBlockLayout } from "./block-layout.js";
 import { classifySettingsChanges } from "./settings-model.js";
+import { createBookmarksView } from "./bookmarks-view.js";
 
 const RESIZE_DEBOUNCE = 150;
 const COOLDOWN_TICK_MS = 1000;
-const BOOKMARK_MENU_OFFSET = 4;
-const BOOKMARK_SUBMENU_OFFSET = 6;
-const BOOKMARK_OVERFLOW_TOLERANCE = 2;
-const USER_AGENT = typeof navigator === "object" && typeof navigator.userAgent === "string" ? navigator.userAgent.toLowerCase() : "";
-const IS_FIREFOX = USER_AGENT.includes("firefox");
-const IS_CHROMIUM = !IS_FIREFOX && /chrome|chromium|crios|edg|opr|vivaldi/.test(USER_AGENT);
 
 /**
  * Maps error messages to short, button-friendly labels.
@@ -101,14 +96,14 @@ const elements = {
   cacheButton: document.getElementById("cache-status-button"),
   cacheLabel: document.getElementById("cache-label"),
   blockTemplate: document.getElementById("block-card-template"),
-  bookmarkEmptyTemplate: document.getElementById("bookmark-empty-template"),
-  bookmarkMenuLayer: document.getElementById("bookmark-menu-layer"),
+  blocksView: document.getElementById("blocks-view"),
+  bookmarksView: document.getElementById("bookmarks-view"),
+  bookmarksBoard: document.getElementById("bm-board"),
+  bookmarksSummary: document.getElementById("bm-summary"),
 };
 
 let resizeTimer = null;
 let cooldownTimer = null;
-let bookmarkResizeObserver = null;
-const openBookmarkFolders = new Set();
 
 const barComponents = {
   bookmarks: elements.bookmarkStrip,
@@ -131,7 +126,6 @@ const barView = createBarRenderer({
   dateElement: elements.barDate,
   timeElement: elements.barTime,
   dateTimeElement: elements.barDateTime,
-  beforeRender: closeAllBookmarkFolders,
 });
 
 const renderBlockLayout = createBlockLayout({
@@ -140,66 +134,14 @@ const renderBlockLayout = createBlockLayout({
   renderCard: renderBlockCard,
 });
 
-const setMenuLayerActive = (isActive) => {
-  const layer = elements.bookmarkMenuLayer;
-  if (!layer) return;
-
-  layer.setAttribute("aria-hidden", isActive ? "false" : "true");
-  layer.style.pointerEvents = isActive ? "auto" : "none";
-};
-
-const calculateMenuPosition = (triggerRect, menuSize, viewport, offset = 0, isSubMenu = false) => {
-  const { width: menuWidth, height: menuHeight } = menuSize;
-  const { width: viewportWidth, height: viewportHeight } = viewport;
-
-  let left, top;
-
-  if (isSubMenu) {
-    left = triggerRect.right + offset;
-    if (left + menuWidth + 8 > viewportWidth) {
-      left = triggerRect.left - menuWidth - offset;
-    }
-    top = triggerRect.top;
-    if (top + menuHeight + 8 > viewportHeight) {
-      top = viewportHeight - menuHeight - 8;
-    }
-  } else {
-    left = triggerRect.left;
-    top = triggerRect.bottom + offset;
-  }
-
-  return {
-    left: Math.min(Math.max(8, left), Math.max(8, viewportWidth - menuWidth - 8)),
-    top: Math.min(Math.max(8, top), Math.max(8, viewportHeight - menuHeight - 8)),
-    maxWidth: Math.max(8, viewportWidth - 16),
-    maxHeight: Math.max(8, viewportHeight - 16)
-  };
-};
-
-const positionMenu = (menu, trigger, offset = BOOKMARK_MENU_OFFSET, isSubMenu = false) => {
-  if (!menu || !trigger) return;
-
-  menu.style.maxHeight = "";
-  menu.style.overflowY = "visible";
-  menu.style.width = "auto";
-
-  const position = calculateMenuPosition(
-    trigger.getBoundingClientRect(),
-    { width: menu.offsetWidth || 0, height: menu.offsetHeight || 0 },
-    { width: window.innerWidth, height: window.innerHeight },
-    offset,
-    isSubMenu
-  );
-
-  menu.style.left = `${Math.round(position.left)}px`;
-  menu.style.top = `${Math.round(position.top)}px`;
-  menu.style.maxHeight = `${position.maxHeight}px`;
-  menu.style.overflowY = "auto";
-  menu.style.width = `${Math.min(menu.offsetWidth || 200, position.maxWidth)}px`;
-};
-
-const positionRootMenu = (menu, trigger) => positionMenu(menu, trigger, BOOKMARK_MENU_OFFSET, false);
-const positionSubMenu = (menu, trigger) => positionMenu(menu, trigger, BOOKMARK_SUBMENU_OFFSET, true);
+const bookmarksView = createBookmarksView({
+  root: elements.bookmarksView,
+  blocksView: elements.blocksView,
+  boardContainer: elements.bookmarksBoard,
+  strip: elements.bookmarkStrip,
+  summary: elements.bookmarksSummary,
+  settings: state.settings,
+});
 
 function setPageBootState(status) {
   if (document.documentElement) {
@@ -207,18 +149,6 @@ function setPageBootState(status) {
   }
 }
 
-function repositionOpenMenus() {
-  if (!elements.bookmarkMenuLayer || !openBookmarkFolders.size) {
-    return;
-  }
-  for (const controller of openBookmarkFolders) {
-    if (typeof controller?.position === "function") {
-      controller.position();
-    } else if (controller?.menu && controller?.trigger) {
-      positionRootMenu(controller.menu, controller.trigger);
-    }
-  }
-}
 async function init() {
   try {
     await hydrateState();
@@ -270,24 +200,15 @@ function wireEvents() {
     storage.onChanged.addListener(handleStorageChange);
   }
   window.addEventListener("resize", handleResize, { passive: true });
-  window.addEventListener("scroll", handleScroll, { passive: true });
   if (elements.bookmarkStrip) {
     elements.bookmarkStrip.addEventListener("wheel", handleBookmarkWheel, { passive: false });
-    if (typeof ResizeObserver === "function") {
-      bookmarkResizeObserver = new ResizeObserver(() => {
-        requestAnimationFrame(() => applyBookmarkOverflow());
-      });
-      bookmarkResizeObserver.observe(elements.bookmarkStrip);
-    }
   }
   elements.cacheButton?.addEventListener("click", handleCacheButtonClick);
-  document.addEventListener("pointerdown", handleDocumentPointerDown, true);
-  document.addEventListener("keydown", handleDocumentKeyDown);
   document.addEventListener("visibilitychange", () => barView.render());
 }
 
 async function renderAll() {
-  await renderBookmarks();
+  await bookmarksView.mount(state.settings);
   await renderBlocks();
   updateCacheStatus();
 }
@@ -297,447 +218,7 @@ function toggleRegions() {
 }
 
 async function renderBookmarks() {
-  const strip = elements.bookmarkStrip;
-  if (!strip) {
-    return;
-  }
-  closeAllBookmarkFolders();
-  openBookmarkFolders.clear();
-  if (elements.bookmarkMenuLayer) {
-    elements.bookmarkMenuLayer.innerHTML = "";
-    setMenuLayerActive(false);
-  }
-  strip.textContent = "";
-  strip.classList.remove("scrolling");
-  strip.classList.remove("has-overflow");
-  strip.dataset.hasOverflow = "false";
-  if (!barView.isVisible("bookmarks")) {
-    return;
-  }
-  if (!bookmarks) {
-    strip.textContent = "Bookmarks unavailable";
-    return;
-  }
-  try {
-    strip.dataset.state = "loading";
-    const tree = await bookmarks.getTree();
-    const rootChildren = tree[0]?.children || [];
-    const bar = rootChildren.find((node) => node.id === "1" || (node.title && node.title.toLowerCase().includes("bookmark")));
-    const nodes = (bar?.children || rootChildren || []).filter(Boolean);
-    const fragment = document.createDocumentFragment();
-    for (const node of nodes) {
-      if (node.type === "separator") {
-        continue;
-      }
-      if (node.url) {
-        fragment.appendChild(createBookmarkLink(node));
-      } else if (node.children?.length) {
-        fragment.appendChild(createBookmarkFolder(node));
-      }
-    }
-    if (!fragment.childElementCount) {
-      const template = elements.bookmarkEmptyTemplate?.content?.cloneNode(true);
-      if (template) {
-        strip.appendChild(template);
-      } else {
-        strip.textContent = "No bookmarks";
-      }
-      return;
-    }
-    strip.appendChild(fragment);
-    requestAnimationFrame(() => {
-      applyBookmarkOverflow();
-    });
-  } catch (error) {
-    console.error("Failed to load bookmarks", error);
-    strip.textContent = "Bookmarks unavailable";
-    strip.classList.remove("scrolling");
-  } finally {
-    strip.dataset.state = "ready";
-  }
-}
-
-function getLocalBookmarkFaviconUrl(pageUrl) {
-  if (!pageUrl) {
-    return null;
-  }
-  if (IS_CHROMIUM && runtime?.getURL) {
-    try {
-      const url = new URL(runtime.getURL("/_favicon/"));
-      url.searchParams.set("pageUrl", pageUrl);
-      url.searchParams.set("size", "32");
-      return url.toString();
-    } catch (error) {
-      console.warn("Failed to build favicon URL", error);
-    }
-  }
-  if (IS_FIREFOX) {
-    return `chrome://favicon/size/32@1x/${pageUrl}`;
-  }
-  return null;
-}
-
-function getRemoteBookmarkFaviconUrl(pageUrl) {
-  return `https://www.google.com/s2/favicons?sz=32&domain_url=${encodeURIComponent(pageUrl || "")}`;
-}
-
-function setBookmarkFaviconSource(img, pageUrl) {
-  if (!img) {
-    return;
-  }
-  const fallbackUrl = getRemoteBookmarkFaviconUrl(pageUrl);
-  const localUrl = getLocalBookmarkFaviconUrl(pageUrl);
-  if (localUrl) {
-    img.src = localUrl;
-    img.onerror = () => {
-      img.onerror = () => img.remove();
-      img.src = fallbackUrl;
-    };
-  } else {
-    img.src = fallbackUrl;
-    img.onerror = () => img.remove();
-  }
-}
-
-function createBookmarkLink(node, className = "bookmark-link") {
-  const link = document.createElement("a");
-  link.className = className;
-  link.href = node.url;
-  link.rel = "noopener";
-  link.title = node.title || node.url;
-  link.dataset.bookmarkItem = "true";
-  link.__bookmarkNode = node;
-
-  const favicon = document.createElement("img");
-  favicon.className = "bookmark-favicon";
-  favicon.alt = "";
-  favicon.referrerPolicy = "no-referrer";
-  favicon.decoding = "async";
-  favicon.loading = "lazy";
-  setBookmarkFaviconSource(favicon, node.url);
-
-  const label = document.createElement("span");
-  label.textContent = node.title || node.url;
-
-  link.append(favicon, label);
-  return link;
-}
-
-const createBookmarkController = (container, trigger, menu, level = 0) => {
-  const menuLayer = elements.bookmarkMenuLayer;
-  let isOpen = false;
-
-  const focusFirstItem = () => menu.querySelector("a, button")?.focus();
-
-  const close = () => {
-    if (!isOpen) return;
-    closeBookmarkMenusFromLevel(level + 1);
-    trigger.setAttribute("aria-expanded", "false");
-    container.classList.remove("is-open");
-    menu.hidden = true;
-    menu.setAttribute("hidden", "");
-    menu.setAttribute("aria-hidden", "true");
-    isOpen = false;
-    openBookmarkFolders.delete(controller);
-    if (!openBookmarkFolders.size) setMenuLayerActive(false);
-  };
-
-  const position = () => positionRootMenu(menu, trigger);
-
-  const open = (focusFirst = false) => {
-    if (isOpen) {
-      position();
-      if (focusFirst) focusFirstItem();
-      return;
-    }
-    closeAllBookmarkFolders(controller);
-    container.classList.add("is-open");
-    trigger.setAttribute("aria-expanded", "true");
-    menu.hidden = false;
-    menu.removeAttribute("hidden");
-    menu.setAttribute("aria-hidden", "false");
-    menu.scrollTop = 0;
-    isOpen = true;
-    openBookmarkFolders.add(controller);
-    if (menuLayer) {
-      setMenuLayerActive(true);
-      menuLayer.appendChild(menu);
-      menu.style.zIndex = "30";
-    }
-    position();
-    if (focusFirst) focusFirstItem();
-  };
-
-  const destroy = () => {
-    close();
-    menu.parentElement?.removeChild(menu);
-  };
-
-  const controller = { trigger, menu, level, isOpen: () => isOpen, position, open, close, destroy };
-
-  trigger.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    isOpen ? close() : open();
-  });
-
-  trigger.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      open(true);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      close();
-      trigger.focus();
-    }
-  });
-
-  return controller;
-};
-
-const createBookmarkFolder = (node) => {
-  const container = document.createElement("div");
-  container.className = "bookmark-folder";
-  container.dataset.bookmarkItem = "true";
-  container.__bookmarkNode = node;
-
-  const trigger = document.createElement("button");
-  trigger.type = "button";
-  trigger.className = "bookmark-trigger";
-  trigger.title = node.title || "Folder";
-  trigger.setAttribute("aria-haspopup", "true");
-  trigger.setAttribute("aria-expanded", "false");
-  trigger.textContent = node.title || "Folder";
-
-  container.appendChild(trigger);
-
-  const menu = buildBookmarkMenu(node.children || [], 0);
-  if (!menu.childElementCount) {
-    trigger.disabled = true;
-    trigger.setAttribute("aria-disabled", "true");
-    return container;
-  }
-
-  const menuId = `bookmark-menu-${node.id || Math.random().toString(36).slice(2)}`;
-  menu.id = menuId;
-  trigger.setAttribute("aria-controls", menuId);
-
-  menu.hidden = true;
-  menu.setAttribute("hidden", "");
-  menu.setAttribute("aria-hidden", "true");
-
-  const menuLayer = elements.bookmarkMenuLayer;
-  if (menuLayer) {
-    menuLayer.appendChild(menu);
-  } else {
-    container.appendChild(menu);
-  }
-
-  container.__bookmarkController = createBookmarkController(container, trigger, menu, 0);
-  return container;
-};
-
-function buildBookmarkMenu(nodes, level = 0) {
-  const menu = document.createElement("ul");
-  menu.className = level === 0 ? "bookmark-menu" : "bookmark-submenu";
-  menu.dataset.level = String(level);
-  menu.setAttribute("role", "menu");
-
-  for (const child of nodes) {
-    if (!child) {
-      continue;
-    }
-    if (child.type === "separator") {
-      const divider = document.createElement("li");
-      divider.className = "bookmark-menu-divider";
-      menu.appendChild(divider);
-      continue;
-    }
-    if (child.url) {
-      menu.appendChild(createBookmarkMenuLink(child));
-    } else if (child.children?.length) {
-      const folderItem = createBookmarkMenuFolder(child, level + 1);
-      if (folderItem) {
-        menu.appendChild(folderItem);
-      }
-    }
-  }
-
-  return menu;
-}
-
-function createBookmarkMenuLink(node) {
-  const item = document.createElement("li");
-  item.className = "bookmark-menu-item";
-  const link = createBookmarkLink(node, "bookmark-menu-link");
-  link.tabIndex = -1;
-  item.appendChild(link);
-  return item;
-}
-
-const createBookmarkMenuController = (item, button, submenu, level) => {
-  const menuLayer = elements.bookmarkMenuLayer;
-  let isOpen = false;
-
-  const focusFirstItem = () => submenu.querySelector("a, button")?.focus();
-
-  const close = () => {
-    if (!isOpen) return;
-    item.classList.remove("submenu-open");
-    button.setAttribute("aria-expanded", "false");
-    submenu.hidden = true;
-    submenu.setAttribute("hidden", "");
-    submenu.setAttribute("aria-hidden", "true");
-    isOpen = false;
-    closeBookmarkMenusFromLevel(level + 1);
-    openBookmarkFolders.delete(controller);
-    if (!openBookmarkFolders.size) setMenuLayerActive(false);
-  };
-
-  const position = () => positionSubMenu(submenu, button);
-
-  const open = (focusFirst = false) => {
-    if (isOpen) {
-      position();
-      if (focusFirst) focusFirstItem();
-      return;
-    }
-    closeBookmarkMenusFromLevel(level, controller);
-    item.classList.add("submenu-open");
-    button.setAttribute("aria-expanded", "true");
-    submenu.hidden = false;
-    submenu.removeAttribute("hidden");
-    submenu.setAttribute("aria-hidden", "false");
-    submenu.scrollTop = 0;
-    isOpen = true;
-    openBookmarkFolders.add(controller);
-    if (menuLayer) {
-      menuLayer.appendChild(submenu);
-      submenu.style.zIndex = String(30 + level);
-    }
-    position();
-    if (focusFirst) focusFirstItem();
-  };
-
-  const controller = { trigger: button, menu: submenu, level, isOpen: () => isOpen, position, open, close };
-
-  button.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    isOpen ? close() : open(true);
-  });
-
-  button.addEventListener("pointerenter", () => open());
-  button.addEventListener("focus", () => open());
-
-  button.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      open(true);
-    } else if (event.key === "ArrowLeft" || event.key === "Escape") {
-      event.preventDefault();
-      close();
-      button.focus();
-    }
-  });
-
-  return controller;
-};
-
-const createBookmarkMenuFolder = (node, level) => {
-  const item = document.createElement("li");
-  item.className = "bookmark-menu-item has-children";
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "bookmark-menu-button";
-  button.setAttribute("aria-haspopup", "true");
-  button.setAttribute("aria-expanded", "false");
-
-  const label = document.createElement("span");
-  label.textContent = node.title || "Folder";
-  const arrow = document.createElement("span");
-  arrow.className = "bookmark-menu-arrow";
-  arrow.textContent = "›";
-  button.append(label, arrow);
-
-  const submenu = buildBookmarkMenu(node.children || [], level);
-  if (!submenu.childElementCount) return null;
-
-  submenu.hidden = true;
-  submenu.setAttribute("hidden", "");
-  submenu.setAttribute("aria-hidden", "true");
-
-  const submenuId = `bookmark-menu-${node.id || Math.random().toString(36).slice(2)}`;
-  submenu.id = submenuId;
-  button.setAttribute("aria-controls", submenuId);
-
-  const menuLayer = elements.bookmarkMenuLayer;
-  if (menuLayer) {
-    menuLayer.appendChild(submenu);
-  } else {
-    item.appendChild(submenu);
-  }
-
-  item.__bookmarkController = createBookmarkMenuController(item, button, submenu, level);
-  item.appendChild(button);
-  return item;
-};
-
-function cleanupBookmarkElement(element) {
-  if (!element) {
-    return;
-  }
-  const controller = element.__bookmarkController;
-  if (controller) {
-    controller.destroy();
-  }
-  if (element.parentElement) {
-    element.parentElement.removeChild(element);
-  }
-}
-
-function closeBookmarkMenusFromLevel(level, except) {
-  if (!openBookmarkFolders.size) {
-    return;
-  }
-  const controllers = Array.from(openBookmarkFolders);
-  for (const controller of controllers) {
-    if (controller === except) {
-      continue;
-    }
-    const controllerLevel = controller?.level ?? 0;
-    if (controllerLevel >= level) {
-      controller.close();
-    }
-  }
-}
-
-function closeAllBookmarkFolders(except) {
-  const controllers = Array.from(openBookmarkFolders);
-  for (const controller of controllers) {
-    if (controller !== except) {
-      controller.close();
-    }
-  }
-  if (!except) {
-    openBookmarkFolders.clear();
-  }
-}
-
-function handleDocumentPointerDown(event) {
-  if (!openBookmarkFolders.size) {
-    return;
-  }
-  if (!event.target.closest(".bookmark-folder, .bookmark-menu, .bookmark-submenu")) {
-    closeAllBookmarkFolders();
-  }
-}
-
-function handleDocumentKeyDown(event) {
-  if (event.key === "Escape") {
-    closeAllBookmarkFolders();
-  }
+  await bookmarksView.updateSettings(state.settings);
 }
 
 function handleBookmarkWheel(event) {
@@ -858,132 +339,6 @@ function updateCacheSummaryTooltip() {
   tooltip += `\n${action}`;
   button.title = tooltip;
   button.setAttribute("aria-label", tooltip.replace(/\n/g, " "));
-}
-
-function createOverflowButton(nodes) {
-  if (!Array.isArray(nodes) || !nodes.length) {
-    return null;
-  }
-  const overflowNode = {
-    id: "bookmark-overflow",
-    title: "⋯",
-    children: nodes,
-  };
-  const container = createBookmarkFolder(overflowNode);
-  if (!container) {
-    return null;
-  }
-  container.dataset.bookmarkOverflow = "true";
-  container.dataset.bookmarkItem = "overflow";
-  container.classList.add("bookmark-overflow");
-  container.__bookmarkNode = overflowNode;
-  const trigger = container.querySelector(".bookmark-trigger");
-  if (trigger) {
-    trigger.textContent = "⋯";
-    trigger.setAttribute("aria-label", "More bookmarks");
-    trigger.title = "More bookmarks";
-    trigger.classList.add("bookmark-overflow-trigger");
-  }
-  return container;
-}
-
-function applyBookmarkOverflow() {
-  const strip = elements.bookmarkStrip;
-  if (!strip || !strip.childElementCount) {
-    return;
-  }
-
-  const previousOverflow = Array.from(strip.querySelectorAll('[data-bookmark-overflow="true"]'));
-  for (const element of previousOverflow) {
-    cleanupBookmarkElement(element);
-  }
-
-  const items = Array.from(strip.children).filter((child) => child?.dataset?.bookmarkItem === "true");
-
-  if (!items.length) {
-    strip.dataset.hasOverflow = "false";
-    return;
-  }
-
-  const availableWidth = strip.clientWidth || 0;
-  if (!availableWidth) {
-    strip.dataset.hasOverflow = "false";
-    return;
-  }
-
-  const threshold = availableWidth - BOOKMARK_OVERFLOW_TOLERANCE;
-  const hiddenNodes = [];
-
-  const showItem = (item) => {
-    item.classList.remove("bookmark-overflow-hidden");
-    item.removeAttribute("aria-hidden");
-  };
-
-  const hideItem = (item, addToFront = false) => {
-    if (!item || item.classList.contains("bookmark-overflow-hidden")) {
-      return;
-    }
-    if (item.__bookmarkController) {
-      item.__bookmarkController.close();
-    }
-    item.classList.add("bookmark-overflow-hidden");
-    item.setAttribute("aria-hidden", "true");
-    const data = item.__bookmarkNode;
-    if (data) {
-      if (addToFront) {
-        hiddenNodes.unshift(data);
-      } else {
-        hiddenNodes.push(data);
-      }
-    }
-  };
-
-  for (const item of items) {
-    showItem(item);
-  }
-
-  let cutoff = items.length;
-  for (let i = 0; i < items.length; i += 1) {
-    const item = items[i];
-    const rectRight = item.offsetLeft + item.offsetWidth;
-    if (rectRight > threshold) {
-      cutoff = i;
-      break;
-    }
-  }
-
-  if (cutoff < items.length) {
-    for (let i = cutoff; i < items.length; i += 1) {
-      hideItem(items[i]);
-    }
-  }
-
-  let overflowContainer = null;
-
-  if (hiddenNodes.length) {
-    overflowContainer = createOverflowButton(hiddenNodes);
-    if (overflowContainer) {
-      strip.appendChild(overflowContainer);
-      let index = cutoff - 1;
-      while (overflowContainer.offsetLeft + overflowContainer.offsetWidth > threshold && index >= 0) {
-        const item = items[index];
-        hideItem(item, true);
-        index -= 1;
-        cleanupBookmarkElement(overflowContainer);
-        overflowContainer = createOverflowButton(hiddenNodes);
-        if (!overflowContainer) {
-          break;
-        }
-        strip.appendChild(overflowContainer);
-      }
-    }
-  }
-
-  strip.dataset.hasOverflow = hiddenNodes.length ? "true" : "false";
-  strip.classList.toggle("has-overflow", hiddenNodes.length > 0);
-  if (openBookmarkFolders.size) {
-    repositionOpenMenus();
-  }
 }
 
 function needsCacheSelection() {
@@ -1438,13 +793,7 @@ function handleResize() {
     if (state.currentBlocks.length) {
       renderLayout(state.currentBlocks);
     }
-    repositionOpenMenus();
-    applyBookmarkOverflow();
   }, RESIZE_DEBOUNCE);
-}
-
-function handleScroll() {
-  repositionOpenMenus();
 }
 
 function renderError(error) {

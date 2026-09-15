@@ -15,7 +15,27 @@
         </header>
 
         <main id="content-area">
-            <section id="blocks-container" aria-live="polite"></section>
+            <section id="blocks-view" class="new-tab-view">
+                <div id="blocks-container" aria-live="polite"></div>
+            </section>
+            <section id="bookmarks-view" class="new-tab-view" hidden>
+                <header id="bm-toolbar">
+                    <button class="button" id="bm-back-blocks" type="button">← blocks</button>
+                    <span id="bm-summary" aria-live="polite"></span>
+                    <div class="bm-toolbar-actions">
+                        <button class="button" id="bm-add-root-folder" type="button" hidden>＋ folder</button>
+                        <button class="button" id="bm-search" type="button">search <span class="key-hint">/</span></button>
+                        <button class="button" id="bm-manage" type="button">manage</button>
+                    </div>
+                </header>
+                <div id="bm-manage-note" hidden>
+                    manage · <span id="bm-manage-count">0 changes</span> · drag to move, click a title to rename, ✕ to delete. Nothing is written until you press done. Changes are lost if you close this tab.
+                    <button class="button" id="bm-manage-cancel" type="button">cancel</button>
+                    <button class="button" id="bm-manage-done" type="button">done</button>
+                    <div id="bm-manage-errors" hidden></div>
+                </div>
+                <div id="bm-board"></div>
+            </section>
         </main>
 
         <footer id="footer-bar" aria-label="Bottom bar" hidden>
@@ -25,7 +45,14 @@
     </div>
 
     <div id="bar-component-pool" hidden>
-        <div class="bar-component bar-component--bookmarks" id="bookmark-strip" data-state="loading" aria-live="polite"></div>
+        <div class="bar-component bar-component--bookmarks" id="bookmark-strip" data-state="loading" aria-live="polite">
+            <div class="view-toggle" role="group" aria-label="New tab view">
+                <button id="view-blocks" type="button" aria-pressed="true">blocks</button>
+                <button id="view-bookmarks" type="button" aria-pressed="false">bookmarks <span class="bookmark-new-badge" id="bookmark-new-count" hidden></span></button>
+            </div>
+            <span class="key-hint" aria-hidden="true">b</span>
+            <div id="launch-chips" aria-label="Launch bookmarks"></div>
+        </div>
         <time class="bar-component bar-text-component" id="bar-date" title="Current date"></time>
         <time class="bar-component bar-text-component" id="bar-time" title="Current time"></time>
         <time class="bar-component bar-text-component" id="bar-date-time" title="Current date and time"></time>
@@ -39,7 +66,28 @@
         </div>
     </div>
 
-    <div id="bookmark-menu-layer" aria-hidden="true"></div>
+    <div id="bm-selection-bar" hidden>
+        <span id="bm-selection-count">0 selected</span>
+        <button class="button" id="bm-open-selection" type="button">open ↗</button>
+        <button class="button" id="bm-move-selection" type="button">move to…</button>
+        <button class="button" id="bm-delete-selection" type="button">delete</button>
+        <button class="button" id="bm-clear-selection" type="button">clear</button>
+    </div>
+    <div id="bm-palette" hidden>
+        <div class="bm-palette-panel">
+            <input id="bm-palette-query" type="text" autocomplete="off" />
+            <div class="bm-palette-columns">
+                <nav id="bm-palette-folders" aria-label="Bookmark folders"></nav>
+                <div class="bm-palette-main">
+                    <div id="bm-palette-filters">
+                        <button class="button is-active" data-filter="all" type="button">all</button>
+                        <button class="button" data-filter="new" type="button">new</button>
+                    </div>
+                    <div id="bm-palette-results"></div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <template id="block-card-template">
         <article class="block-card">
@@ -51,8 +99,8 @@
             </div>
         </article>
     </template>
-    <template id="bookmark-empty-template">
-        <span>No bookmarks found</span>
-    </template>
+    <template id="bm-card-template"><section class="bm-card"></section></template>
+    <template id="bm-group-template"><section class="bm-group"></section></template>
+    <template id="bm-row-template"><a class="bm-row" target="_blank" rel="noopener"></a></template>
 </body>
 </html>

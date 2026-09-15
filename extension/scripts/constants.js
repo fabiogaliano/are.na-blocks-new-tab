@@ -4,7 +4,9 @@ export const STORAGE_KEYS = {
     cacheMeta: "blockCacheMeta",
     bootstrap: "bootstrapState",
     arenaAuth: "arenaAuth",
-    rateLimit: "arenaRateLimit"
+    rateLimit: "arenaRateLimit",
+    bookmarkState: "bookmarkState",
+    bookmarkTrash: "bookmarkTrash"
 };
 
 export const BAR_COMPONENTS = ["none", "bookmarks", "cache", "settings", "date", "time", "dateTime"];
@@ -59,8 +61,18 @@ export const DEFAULT_SETTINGS = {
     barLayout: DEFAULT_BAR_LAYOUT,
     dateFormat: "system",
     timeFormat: "system",
-    blockMetaFields: ["title", "description", "createdAt", "blockId", "type"]
+    blockMetaFields: ["title", "description", "createdAt", "blockId", "type"],
+    bookmarksRootPath: "",
+    hiddenFolders: ["archive", "to move"],
+    launchFolder: "launch"
 };
+
+export const DEFAULT_BOOKMARK_STATE = { lastViewedAt: 0, newIds: [] };
+export const OPEN_ALL_THRESHOLD = 15;
+export const TRASH_MAX_ENTRIES = 200;
+export const TRASH_TOAST_MS = 10_000;
+export const MARQUEE_START_DISTANCE = 4;
+export const BOOKMARK_REFRESH_DEBOUNCE = 250;
 
 // 5: block records moved out of the cache object into the block store. The bump
 // discards v4 caches, which carried every block inline and are the payload this

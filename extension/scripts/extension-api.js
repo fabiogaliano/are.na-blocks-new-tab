@@ -48,8 +48,25 @@ export const runtime = {
 export const bookmarks = api.bookmarks
     ? {
           getTree: promisify(api.bookmarks, "getTree"),
-          getChildren: promisify(api.bookmarks, "getChildren")
+          getChildren: promisify(api.bookmarks, "getChildren"),
+          get: promisify(api.bookmarks, "get"),
+          getSubTree: promisify(api.bookmarks, "getSubTree"),
+          search: promisify(api.bookmarks, "search"),
+          create: promisify(api.bookmarks, "create"),
+          move: promisify(api.bookmarks, "move"),
+          update: promisify(api.bookmarks, "update"),
+          remove: promisify(api.bookmarks, "remove"),
+          removeTree: promisify(api.bookmarks, "removeTree"),
+          onCreated: api.bookmarks.onCreated,
+          onChanged: api.bookmarks.onChanged,
+          onMoved: api.bookmarks.onMoved,
+          onRemoved: api.bookmarks.onRemoved,
+          onChildrenReordered: api.bookmarks.onChildrenReordered
       }
+    : null;
+
+export const tabs = api.tabs
+    ? { create: promisify(api.tabs, "create") }
     : null;
 
 export const alarms = api.alarms
