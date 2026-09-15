@@ -1,0 +1,13 @@
+{
+  "name": "arena-blocks-new-tab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "node --check extension/scripts/*.js"
+  },
+  "devDependencies": {
+    "vitest": "^3"
+  }
+}
