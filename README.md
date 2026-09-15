@@ -17,6 +17,19 @@ This extension replaces the browser’s default new tab with a grid of random Ar
 - Use the bookmark strip across the top to launch saved links or drill into folders. If the strip overflows the header, the `⋯` button reveals the hidden bookmarks in the same dropdown style as nested folders.
 - The footer shows the current cache status message and links to the settings page. On the first launch the extension saves the default settings and immediately refreshes the cache so the grid is never blank.
 
+## Unread post counts
+- Bookmarks in the reading, people, dev, design, learning, mac & terminal, film and tana
+  folders show a count of posts published since you last opened them, sourced from the
+  site's RSS/Atom feed. Folders sum the counts of everything inside them.
+- Feed discovery runs offline, not in the extension. `extension/data/feeds.json` maps a
+  bookmark url to its feed, and the generator also rewrites `host_permissions` in the
+  manifest so the extension can only reach feeds it already found.
+- Re-run it after adding bookmarks: `python3 scripts/build-feeds.py` (Helium may stay open;
+  the script only reads the bookmarks file). Reload the unpacked extension afterwards so
+  the new manifest permissions take effect.
+- A background alarm polls a slice of the feed list every 30 minutes, refreshing any feed
+  older than 6 hours. Links whose site publishes no feed simply show no count.
+
 ## Settings Page
 - **Content Sources:** Configure channel slugs, specific block IDs, and the block types (filters) to include. Click **Save & Refresh** to store the changes and fetch a fresh cache in one step.
 - **Display:** Adjust block amount and size, theme, bar components, and supporting block information. Click **Save display settings** to apply without triggering a cache refresh.

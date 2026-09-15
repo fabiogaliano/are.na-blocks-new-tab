@@ -1,2 +1,5 @@
 /docs/log.txt
 node_modules/
+scripts/__pycache__/
+docs/tmp/
+.claude/settings.local.json

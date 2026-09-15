@@ -162,3 +162,21 @@ export const saveArenaAuth = async ({ token, user }) => {
 export const clearArenaAuth = async () => {
     await storage.remove(STORAGE_KEYS.arenaAuth);
 };
+
+export const getFeedState = async () => {
+    const raw = await storage.get(STORAGE_KEYS.feedState);
+    const stored = raw?.[STORAGE_KEYS.feedState];
+    return {
+        entries: stored?.entries && typeof stored.entries === "object" ? stored.entries : {},
+        lastRunAt: Number(stored?.lastRunAt || 0)
+    };
+};
+
+export const saveFeedState = async (state) => {
+    const payload = {
+        entries: state?.entries && typeof state.entries === "object" ? state.entries : {},
+        lastRunAt: Number(state?.lastRunAt || 0)
+    };
+    await storage.set({ [STORAGE_KEYS.feedState]: payload });
+    return payload;
+};

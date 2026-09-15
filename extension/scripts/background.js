@@ -1,7 +1,8 @@
 import { addListenerSafe, alarms, runtime } from "./extension-api.js";
-import { ALARMS, CACHE_STATE, MESSAGES } from "./constants.js";
+import { ALARMS, CACHE_STATE, FEED_POLL_INTERVAL_MINUTES, MESSAGES } from "./constants.js";
 import { saveCacheMeta } from "./storage.js";
 import { cacheLifecycle } from "./cache-refresh.js";
+import { pollFeeds } from "./feed-poll.js";
 
 runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.type !== MESSAGES.refreshCache) {
@@ -16,7 +17,12 @@ runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
 });
 
+const scheduleFeedPoll = () => {
+    alarms?.create?.(ALARMS.feedPoll, { periodInMinutes: FEED_POLL_INTERVAL_MINUTES, delayInMinutes: 1 });
+};
+
 runtime.onInstalled.addListener(async () => {
+    scheduleFeedPoll();
     const { cache } = await cacheLifecycle.read();
     if (!cache.blockIds.length) {
         await saveCacheMeta({ state: CACHE_STATE.idle, lastUpdated: 0, lastError: null });
@@ -24,6 +30,14 @@ runtime.onInstalled.addListener(async () => {
 });
 
 addListenerSafe(alarms?.onAlarm, async (alarm) => {
+    if (alarm?.name === ALARMS.feedPoll) {
+        try {
+            await pollFeeds();
+        } catch (error) {
+            console.error("Feed poll failed", error);
+        }
+        return;
+    }
     if (alarm?.name !== ALARMS.cacheResume) {
         return;
     }
@@ -37,6 +51,7 @@ addListenerSafe(alarms?.onAlarm, async (alarm) => {
 });
 
 runtime.onStartup?.addListener(async () => {
+    scheduleFeedPoll();
     try {
         await cacheLifecycle.ensureReady();
     } catch (error) {

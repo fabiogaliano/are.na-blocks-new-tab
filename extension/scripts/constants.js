@@ -6,7 +6,8 @@ export const STORAGE_KEYS = {
     arenaAuth: "arenaAuth",
     rateLimit: "arenaRateLimit",
     bookmarkState: "bookmarkState",
-    bookmarkTrash: "bookmarkTrash"
+    bookmarkTrash: "bookmarkTrash",
+    feedState: "feedState"
 };
 
 export const BAR_COMPONENTS = ["none", "bookmarks", "cache", "settings", "date", "time", "dateTime"];
@@ -68,6 +69,15 @@ export const DEFAULT_SETTINGS = {
 };
 
 export const DEFAULT_BOOKMARK_STATE = { lastViewedAt: 0, newIds: [] };
+export const DEFAULT_FEED_STATE = { entries: {}, lastRunAt: 0 };
+
+// One alarm covers a slice of the feed list rather than all of it: the worker is
+// evicted after ~30s idle and capped at five minutes per invocation, so the poll
+// has to survive being cut off and resume where it stopped.
+export const FEED_POLL_INTERVAL_MINUTES = 30;
+export const FEED_POLL_BATCH = 25;
+export const FEED_TTL_MS = 6 * 60 * 60 * 1000;
+export const FEED_FETCH_TIMEOUT_MS = 10_000;
 export const OPEN_ALL_THRESHOLD = 15;
 export const TRASH_MAX_ENTRIES = 200;
 export const TRASH_TOAST_MS = 10_000;
@@ -97,7 +107,8 @@ export const MESSAGES = {
 };
 
 export const ALARMS = {
-    cacheResume: "arena-cache-resume"
+    cacheResume: "arena-cache-resume",
+    feedPoll: "feed-poll"
 };
 
 export const TILE_SIZE_OPTIONS = ["auto", "xs", "s", "m", "l", "xl"];
