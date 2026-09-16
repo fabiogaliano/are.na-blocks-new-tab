@@ -139,6 +139,39 @@ def find_feed(url):
     return None
 
 
+# Feed urls are stored post-redirect: the manifest grants host permissions per
+# origin, and Chrome's CORS bypass does not survive a redirect to an origin the
+# extension was never granted — the fetch dies with a CORS error instead.
+def canonical(url):
+    try:
+        req = urllib.request.Request(url, headers=UA)
+        with urllib.request.urlopen(req, timeout=12) as f:
+            f.read(20000)
+            final = f.url
+    except Exception:
+        return url
+    # An http landing spot would have to be granted as an http origin; most hosts
+    # serve the same feed over https, so prefer that when it answers.
+    if final.startswith("http://"):
+        secure = "https://" + final[len("http://"):]
+        if verify(secure):
+            return secure
+    return final
+
+
+def resolve_all(mapping, label):
+    targets = sorted(set(mapping.values()))
+    if not targets:
+        return mapping
+    print(f"resolving redirects for {len(targets)} {label}", flush=True)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        resolved = dict(zip(targets, pool.map(canonical, targets)))
+    for before, after in resolved.items():
+        if after != before:
+            print(f"  {before} -> {after}")
+    return {link: resolved[url] for link, url in mapping.items()}
+
+
 ENTRY_DATE = re.compile(rb"<(?:pubDate|updated|published|dc:date)[^>]*>([^<]+)<", re.I)
 
 
@@ -200,6 +233,8 @@ def main():
             if done % 50 == 0:
                 print(f"  {done}/{len(links)} — {len(feeds)} feeds", flush=True)
 
+    feeds = resolve_all(feeds, "feeds")
+
     import datetime
     now = datetime.datetime.now(datetime.timezone.utc)
     print(f"verifying {len(set(feeds.values()))} feeds", flush=True)
@@ -225,14 +260,24 @@ def main():
         for url, at in stale[:10]:
             print(f"    {at.date()}  {feeds[url]}")
 
+    # Page fallbacks are recorded by audit-feeds.py, not discovered here, so a
+    # regeneration has to carry forward the ones whose bookmark still exists.
+    previous = json.loads(OUT.read_text()).get("pages", {}) if OUT.exists() else {}
+    pages = resolve_all({link: page for link, page in previous.items() if link in seen}, "page fallbacks")
+    for link in pages:
+        feeds.pop(link, None)
+
     OUT.write_text(json.dumps({
         "generatedAt": int(time.time() * 1000),
-        "feeds": dict(sorted(feeds.items()))
+        "feeds": dict(sorted(feeds.items())),
+        "pages": dict(sorted(pages.items()))
     }, indent=1, ensure_ascii=False) + "\n")
-    print(f"wrote {OUT} — {len(feeds)}/{len(links)} links have a feed")
+    print(f"wrote {OUT} — {len(feeds)}/{len(links)} links have a feed, "
+          f"{len(pages)} page fallbacks")
     # Host permissions are written from the same probe rather than declared as
     # <all_urls>: the extension only ever fetches feeds it already discovered.
-    origins = sorted({"{0.scheme}://{0.netloc}/*".format(urlparse(f)) for f in feeds.values()})
+    origins = sorted({"{0.scheme}://{0.netloc}/*".format(urlparse(u))
+                      for u in list(feeds.values()) + list(pages.values())})
     manifest = json.loads(MANIFEST.read_text())
     manifest["host_permissions"] = KEEP_HOSTS + origins
     MANIFEST.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

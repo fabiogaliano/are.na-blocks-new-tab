@@ -17,6 +17,28 @@ export function parseEntryDates(text) {
     return [...new Set(dates)].sort((a, b) => b - a).slice(0, MAX_DATES);
 }
 
+const ISO_DATE = /(20[1-9]\d)-(\d{2})-(\d{2})/g;
+const MONTHS = ["january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december"];
+const LONG_DATE = new RegExp(`(${MONTHS.join("|")})\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20[1-9]\\d)`, "gi");
+
+// Used for the handful of sites whose advertised feed stopped tracking them: the
+// dates printed on the page are the only remaining signal. Future dates are
+// dropped because copyright years and event listings would otherwise always win.
+export function parsePageDates(html, now = Date.now()) {
+    const text = `${html || ""}`;
+    const dates = [];
+    for (const [, year, month, day] of text.matchAll(ISO_DATE)) {
+        dates.push(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    }
+    for (const [, month, day, year] of text.matchAll(LONG_DATE)) {
+        dates.push(Date.UTC(Number(year), MONTHS.indexOf(month.toLowerCase()), Number(day)));
+    }
+    return [...new Set(dates.filter((at) => Number.isFinite(at) && at <= now))]
+        .sort((a, b) => b - a)
+        .slice(0, MAX_DATES);
+}
+
 export function newestOf(dates) {
     return (dates || []).reduce((newest, at) => (at > newest ? at : newest), 0);
 }

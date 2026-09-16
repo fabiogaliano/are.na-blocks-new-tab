@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     countSince,
+    parsePageDates,
     freshCountForLink,
     mergeFeedResult,
     newestOf,
@@ -49,6 +50,35 @@ describe("parseEntryDates", () => {
     it("returns nothing for empty input", () => {
         expect(parseEntryDates("")).toEqual([]);
         expect(parseEntryDates(null)).toEqual([]);
+    });
+});
+
+describe("parsePageDates", () => {
+    const NOW = Date.parse("2026-09-15T00:00:00Z");
+
+    it("reads ISO dates printed on the page", () => {
+        expect(parsePageDates('<time datetime="2026-04-08">x</time>', NOW))
+            .toEqual([Date.UTC(2026, 3, 8)]);
+    });
+
+    it("reads long-form dates with ordinal suffixes", () => {
+        expect(parsePageDates("<p>April 8th, 2026</p>", NOW)).toEqual([Date.UTC(2026, 3, 8)]);
+        expect(parsePageDates("<p>December 1 2025</p>", NOW)).toEqual([Date.UTC(2025, 11, 1)]);
+    });
+
+    it("drops future dates so copyright years do not win", () => {
+        expect(parsePageDates("<footer>© 2030</footer><p>2026-04-08</p>", NOW))
+            .toEqual([Date.UTC(2026, 3, 8)]);
+    });
+
+    it("sorts newest first and de-duplicates", () => {
+        const html = "<p>2024-07-15</p><p>April 8th, 2026</p><p>2024-07-15</p>";
+        expect(parsePageDates(html, NOW)).toEqual([Date.UTC(2026, 3, 8), Date.UTC(2024, 6, 15)]);
+    });
+
+    it("returns nothing when the page prints no dates", () => {
+        expect(parsePageDates("<p>hello</p>", NOW)).toEqual([]);
+        expect(parsePageDates(null, NOW)).toEqual([]);
     });
 });
 

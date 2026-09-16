@@ -8,7 +8,7 @@ it is kept out of build-feeds.py because it doubles the fetching.
 
 Usage: python3 scripts/audit-feeds.py
 """
-import json, re, datetime
+import json, re, sys, datetime
 from concurrent.futures import ThreadPoolExecutor
 import urllib.request
 
@@ -85,7 +85,11 @@ def audit(pair):
     return row
 
 
-feeds = json.load(open("extension/data/feeds.json"))["feeds"]
+FEEDS_PATH = "extension/data/feeds.json"
+MANIFEST_PATH = "extension/manifest.json"
+LAG_DAYS = 120
+doc = json.load(open(FEEDS_PATH))
+feeds = doc["feeds"]
 pairs = list(feeds.items())
 rows, n = [], 0
 with ThreadPoolExecutor(max_workers=12) as pool:
@@ -104,6 +108,32 @@ for r in rows:
     lag = (pn - fn).days
     if lag > 120:
         lagging.append((lag, r["link"], fn.date(), pn.date()))
-print(f"\n{len(lagging)} feeds lag their page by >120 days:")
+print(f"\n{len(lagging)} feeds lag their page by >{LAG_DAYS} days:")
 for lag, link, fn, pn in sorted(lagging, reverse=True)[:30]:
     print(f"  feed {fn}  page {pn}  (+{lag}d)  {link[:60]}")
+
+if "--write" in sys.argv:
+    # A feed that stopped tracking its site is replaced by the page itself, which
+    # still prints dates. The feed entry is dropped so the poller does not spend a
+    # fetch on a source already known to be frozen.
+    pages = doc.get("pages", {})
+    for _, link, _, _ in lagging:
+        pages[link] = link
+        feeds.pop(link, None)
+    doc["pages"] = dict(sorted(pages.items()))
+    doc["feeds"] = dict(sorted(feeds.items()))
+    with open(FEEDS_PATH, "w") as f:
+        json.dump(doc, f, indent=1, ensure_ascii=False)
+        f.write("\n")
+
+    from urllib.parse import urlparse
+    origins = sorted({"{0.scheme}://{0.netloc}/*".format(urlparse(u))
+                      for u in list(feeds.values()) + list(doc["pages"].values())})
+    manifest = json.load(open(MANIFEST_PATH))
+    manifest["host_permissions"] = ["https://api.are.na/*"] + origins
+    with open(MANIFEST_PATH, "w") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"\nwrote {len(doc['pages'])} page fallbacks; {len(origins)} host_permissions")
+else:
+    print("\nre-run with --write to record these as page fallbacks")
