@@ -7,10 +7,11 @@ export const STORAGE_KEYS = {
     rateLimit: "arenaRateLimit",
     bookmarkState: "bookmarkState",
     bookmarkTrash: "bookmarkTrash",
-    feedState: "feedState"
+    feedState: "feedState",
+    recent: "recentBlocks"
 };
 
-export const BAR_COMPONENTS = ["none", "bookmarks", "cache", "settings", "date", "time", "dateTime"];
+export const BAR_COMPONENTS = ["none", "bookmarks", "recent", "cache", "settings", "date", "time", "dateTime"];
 
 export const BLOCK_META_FIELDS = [
     "title",
@@ -40,7 +41,7 @@ export const TIME_FORMATS = ["system", "12-hour", "24-hour", "12-hour-seconds", 
 export const DEFAULT_BAR_LAYOUT = {
     top: {
         left: "bookmarks",
-        right: "none"
+        right: "recent"
     },
     bottom: {
         left: "cache",
@@ -66,8 +67,8 @@ export const DEFAULT_SETTINGS = {
     bookmarksRootPath: "",
     hiddenFolders: ["archive", "to move"],
     launchFolder: "launch",
-    pinnedFolders: ["reading/daily", "reading/curated"],
-    mainFolders: ["people", "reading/slow", "dev", "design", "learning", "mac & terminal", "film", "tana"]
+    pinnedFolders: ["reading/daily", "reading/product"],
+    mainFolders: ["people", "reading/slow", "reading/curated", "dev", "design", "learning", "mac & terminal", "film", "tana"]
 };
 
 export const DEFAULT_BOOKMARK_STATE = { lastViewedAt: 0, newIds: [], openedAt: {} };

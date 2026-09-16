@@ -135,22 +135,119 @@ async function restoreNode(node, api, parentId, created) {
     }
 }
 
-export async function restoreEntry(entry, api, { rootId = "1", storage: storageApi } = {}) {
-    const bookmarksApi = await getApi(api);
-    const storage = await getStorage(storageApi);
-    if (!bookmarksApi) {
-        throw new Error("Bookmarks unavailable");
-    }
+async function restoreNodes(nodes, bookmarksApi, rootId) {
     const created = [];
     let orphaned = 0;
-    for (const node of entry?.nodes || []) {
+    for (const node of nodes || []) {
         const useOriginalParent = await nodeExists(bookmarksApi, node.parentId);
         if (!useOriginalParent) {
             orphaned += 1;
         }
         await restoreNode(node, bookmarksApi, useOriginalParent ? node.parentId : rootId, created);
     }
+    return { created, orphaned };
+}
+
+export async function restoreEntry(entry, api, { rootId = "1", storage: storageApi } = {}) {
+    const bookmarksApi = await getApi(api);
+    const storage = await getStorage(storageApi);
+    if (!bookmarksApi) {
+        throw new Error("Bookmarks unavailable");
+    }
+    const result = await restoreNodes(entry?.nodes, bookmarksApi, rootId);
     const trash = await readTrash(storage);
     await writeTrash(trash.entries.filter((candidate) => candidate.id !== entry.id), storage);
-    return { created, orphaned };
+    return result;
+}
+
+/**
+ * Addresses one node inside an entry by its position in the snapshot forest,
+ * e.g. "0.2.1". Index paths survive a round trip through storage, which the
+ * bookmark ids in a snapshot cannot: those nodes no longer exist.
+ */
+const childPath = (path, index) => (path ? `${path}.${index}` : String(index));
+
+/** Every link in an entry, flattened, so a restore can be picked apart. */
+export function listEntryLinks(entry) {
+    const links = [];
+    const visit = (nodes, path) => {
+        (nodes || []).forEach((node, index) => {
+            const here = childPath(path, index);
+            if (typeof node.url === "string") {
+                links.push({
+                    path: here,
+                    title: node.title || node.url,
+                    // Where it lived when it was deleted: the snapshot already
+                    // resolved this for every node, ancestors included.
+                    folderPath: node.parentPath || "",
+                    url: node.url
+                });
+                return;
+            }
+            visit(node.children, here);
+        });
+    };
+    visit(entry?.nodes, "");
+    return links;
+}
+
+const pruneNodes = (nodes, path, keep, wanted) => (nodes || []).reduce((kept, node, index) => {
+    const here = childPath(path, index);
+    const selected = wanted.has(here);
+    if (typeof node.url === "string") {
+        if (selected === keep) {
+            kept.push(node);
+        }
+        return kept;
+    }
+    const children = pruneNodes(node.children, here, keep, wanted);
+    // An ancestor folder rides along with the links it held, so a restored link
+    // lands back in its folder rather than loose at the board root.
+    if (children.length) {
+        kept.push({ ...node, children });
+    }
+    return kept;
+}, []);
+
+/** The entry reduced to the chosen links, ancestor folders included. */
+export function pruneEntryToPaths(entry, paths) {
+    return { ...entry, nodes: pruneNodes(entry?.nodes, "", true, new Set(paths || [])) };
+}
+
+/** What is left in the trash once the chosen links are restored out of it. */
+export function removePathsFromEntry(entry, paths) {
+    const nodes = pruneNodes(entry?.nodes, "", false, new Set(paths || []));
+    return nodes.length ? { ...entry, nodes, label: relabelEntry(entry, nodes) } : null;
+}
+
+function relabelEntry(entry, nodes) {
+    const count = listEntryLinks({ nodes }).length;
+    const prefix = `${entry?.label || ""}`.split(" · ")[0];
+    const tail = `${count} left`;
+    return prefix && prefix !== entry?.label ? `${prefix} · ${tail}` : tail;
+}
+
+export async function restoreSelection(entry, paths, api, { rootId = "1", storage: storageApi } = {}) {
+    const bookmarksApi = await getApi(api);
+    const storage = await getStorage(storageApi);
+    if (!bookmarksApi) {
+        throw new Error("Bookmarks unavailable");
+    }
+    const selection = pruneEntryToPaths(entry, paths);
+    if (!selection.nodes.length) {
+        return { created: [], orphaned: 0 };
+    }
+    const result = await restoreNodes(selection.nodes, bookmarksApi, rootId);
+    const remainder = removePathsFromEntry(entry, paths);
+    const trash = await readTrash(storage);
+    await writeTrash(
+        trash.entries.flatMap((candidate) => {
+            if (candidate.id !== entry.id) {
+                return [candidate];
+            }
+            return remainder ? [remainder] : [];
+        }),
+        storage
+    );
+    return result;
 }

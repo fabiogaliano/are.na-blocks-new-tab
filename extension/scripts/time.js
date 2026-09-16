@@ -1,8 +1,8 @@
-export const formatRelativeTime = (timestamp) => {
+export const formatRelativeTime = (timestamp, now = Date.now()) => {
     const value = Number(timestamp);
     if (!Number.isFinite(value) || value <= 0) return "just now";
     
-    const delta = Date.now() - value;
+    const delta = now - value;
     if (delta < 0) return "just now";
     
     const minutes = Math.floor(delta / 60000);

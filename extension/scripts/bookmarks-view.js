@@ -3,7 +3,6 @@ import { addListenerSafe, bookmarks, storage } from "./extension-api.js";
 import { applyFavicon } from "./bookmark-favicon.js";
 import { createBoard } from "./bookmarks-board.js";
 import { createColumns, createNewPill } from "./bookmarks-columns.js";
-import { createStack } from "./bookmarks-stack.js";
 import { buildBoard, buildSurfaces } from "./bookmarks-model.js";
 import { openLinks } from "./bookmarks-open.js";
 import { markBoardOpened, markOpened, markRead, pruneNewIds, pruneOpenedAt, seedOpenedAt, synchronizeNewMarkers, writeBookmarkState } from "./bookmarks-state.js";
@@ -17,7 +16,7 @@ import { applyQueue, describeQueue, queueOp, reduceQueue } from "./bookmarks-man
 
 const LAUNCH_CHIP_CLEARANCE = 16;
 
-export function createBookmarksView({ root, blocksView, boardContainer, strip, summary, settings }) {
+export function createBookmarksView({ root, blocksView, boardContainer, strip, status, settings }) {
     let currentSettings = settings;
     let model = null;
     let surfaces = { pinned: [], main: [], archive: [] };
@@ -46,7 +45,6 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     const document = root.ownerDocument;
     const toBlocks = document.getElementById("view-blocks");
     const toBookmarks = document.getElementById("view-bookmarks");
-    const backToBlocks = document.getElementById("bm-back-blocks");
     const launchList = document.getElementById("launch-chips");
     const newBadge = document.getElementById("bookmark-new-count");
     const selectionBar = document.getElementById("bm-selection-bar");
@@ -64,22 +62,20 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     const manageDoneButton = document.getElementById("bm-manage-done");
     const manageErrors = document.getElementById("bm-manage-errors");
     const paletteOverlay = document.getElementById("bm-palette");
-    const stackRoot = document.getElementById("bm-stack");
+    const surfaceRoot = document.getElementById("bm-surface");
+    const browseLabel = document.getElementById("bm-browse-label");
+    const surfaceMainButton = document.getElementById("bm-surface-main");
+    const surfaceArchiveButton = document.getElementById("bm-surface-archive");
     const pinnedContainer = document.getElementById("bm-pinned");
     const mainColumnsEl = document.getElementById("bm-main-columns");
     const archiveColumnsEl = document.getElementById("bm-archive-columns");
     const mainCrumb = document.getElementById("bm-main-crumb");
     const archiveCrumb = document.getElementById("bm-archive-crumb");
-    const mainMeta = document.getElementById("bm-main-meta");
-    const archiveMeta = document.getElementById("bm-archive-meta");
     const mainColumns = mainColumnsEl
         ? createColumns({ container: mainColumnsEl, breadcrumb: mainCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll })
         : null;
     const archiveColumns = archiveColumnsEl
         ? createColumns({ container: archiveColumnsEl, breadcrumb: archiveCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll })
-        : null;
-    const stack = stackRoot
-        ? createStack({ cards: [document.getElementById("bm-card-main"), document.getElementById("bm-card-archive")] })
         : null;
     const board = createBoard({ container: boardContainer, onOpen: handleOpen, onOpenAll: handleOpenAll, onManageAction: handleManageAction });
     const marquee = createMarquee({
@@ -101,6 +97,37 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         bookmarks.onRemoved,
         bookmarks.onChildrenReordered
     ] : [];
+
+    // "day to day" and "archive" are two reads of the same tree, so they swap in
+    // place rather than stacking two boards on top of each other.
+    function setSurface(name) {
+        const archive = name === "archive";
+        if (pinnedContainer) {
+            pinnedContainer.hidden = archive;
+        }
+        if (mainColumnsEl) {
+            mainColumnsEl.hidden = archive;
+        }
+        if (archiveColumnsEl) {
+            archiveColumnsEl.hidden = !archive;
+        }
+        if (mainCrumb) {
+            mainCrumb.hidden = archive;
+        }
+        if (archiveCrumb) {
+            archiveCrumb.hidden = !archive;
+        }
+        if (browseLabel) {
+            browseLabel.textContent = archive ? "archive" : "everything else";
+        }
+        surfaceMainButton?.classList.toggle("is-active", !archive);
+        surfaceArchiveButton?.classList.toggle("is-active", archive);
+        surfaceMainButton?.setAttribute("aria-pressed", String(!archive));
+        surfaceArchiveButton?.setAttribute("aria-pressed", String(archive));
+    }
+
+    const showMainSurface = () => setSurface("main");
+    const showArchiveSurface = () => setSurface("archive");
 
     function setActiveView(showBookmarks) {
         visible = showBookmarks;
@@ -153,18 +180,19 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         strip.classList.toggle("scrolling", !centred);
     }
 
-    function renderSummary() {
-        if (!summary || !model) {
+    function clearStatus() {
+        if (!status) {
             return;
         }
-        summary.textContent = `${model.linkCount} link${model.linkCount === 1 ? "" : "s"} · ${model.folderCount || 0} folder${model.folderCount === 1 ? "" : "s"}`;
+        status.textContent = "";
+        status.hidden = true;
     }
 
     function clearToolbarStatus() {
         clearTimeout(statusTimer);
         statusTimer = null;
         statusActive = false;
-        renderSummary();
+        clearStatus();
     }
 
     function armStatusTimer() {
@@ -174,21 +202,22 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     }
 
     function showToolbarStatus(text, { duration = 4000, undo = false } = {}) {
-        if (!summary) {
+        if (!status) {
             return;
         }
         clearTimeout(statusTimer);
         statusActive = true;
         statusRemaining = duration;
-        summary.innerHTML = "";
-        summary.append(`${text}${undo ? " · " : ""}`);
+        status.innerHTML = "";
+        status.hidden = false;
+        status.append(`${text}${undo ? " · " : ""}`);
         if (undo) {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "bm-inline-action";
             button.textContent = "undo";
             button.addEventListener("click", handleUndo);
-            summary.append(button);
+            status.append(button);
         }
         armStatusTimer();
     }
@@ -545,14 +574,10 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     }
 
     function setLayout(manageLayout) {
-        if (stackRoot) {
-            stackRoot.hidden = manageLayout;
+        if (surfaceRoot) {
+            surfaceRoot.hidden = manageLayout;
         }
         boardContainer.hidden = !manageLayout;
-    }
-
-    function countLinks(nodes) {
-        return nodes.reduce((total, node) => total + node.count, 0);
     }
 
     function renderPinned() {
@@ -566,22 +591,37 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
             heading.textContent = node.path.split("/").join(" — ");
             const block = document.createElement("div");
             block.className = "bm-pinned-block";
-            const rows = document.createElement("div");
-            rows.className = "bm-pinned-rows";
-            for (const link of node.links) {
-                rows.append(createPinnedRow(link));
+            // Subfolders are the grouping: a pinned folder split into "communities",
+            // "startups" and so on reads as labelled columns instead of one long list.
+            if (node.children.length) {
+                block.classList.add("is-grouped");
+                for (const group of node.children) {
+                    block.append(createPinnedGroup(group.title, group.links));
+                }
+            } else {
+                block.append(createPinnedRows(node.links));
             }
-            block.append(rows);
             pinnedContainer.append(heading, block);
         }
-        if (mainMeta) {
-            mainMeta.textContent = surfaces.pinned
-                .map((node) => `${node.path} ${node.links.length}`)
-                .join(" · ");
+    }
+
+    function createPinnedRows(links) {
+        const rows = document.createElement("div");
+        rows.className = "bm-pinned-rows";
+        for (const link of links) {
+            rows.append(createPinnedRow(link));
         }
-        if (archiveMeta) {
-            archiveMeta.textContent = `${surfaces.archive.length} folders · ${countLinks(surfaces.archive)} links`;
-        }
+        return rows;
+    }
+
+    function createPinnedGroup(title, links) {
+        const group = document.createElement("div");
+        group.className = "bm-pinned-group";
+        const label = document.createElement("div");
+        label.className = "bm-group-label";
+        label.textContent = title;
+        group.append(label, createPinnedRows(links));
+        return group;
     }
 
     function createPinnedRow(link) {
@@ -626,9 +666,6 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
             archiveColumns?.setNodes(surfaces.archive, { freshFor });
         }
         root.dataset.renderMs = (performance.now() - startedAt).toFixed(2);
-        if (summary && !statusActive) {
-            renderSummary();
-        }
         renderLaunchChips();
         updateNewBadge();
         palette.update({ links: model.links, folders: folderChoices(), newIds: bookmarkState.newIds });
@@ -755,7 +792,6 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         strip.hidden = false;
         toBlocks?.addEventListener("click", hide);
         toBookmarks?.addEventListener("click", show);
-        backToBlocks?.addEventListener("click", hide);
         openSelectionButton?.addEventListener("click", openSelected);
         moveSelectionButton?.addEventListener("click", openMovePalette);
         deleteSelectionButton?.addEventListener("click", deleteSelected);
@@ -765,8 +801,10 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         addRootFolderButton?.addEventListener("click", handleAddRootFolder);
         manageCancelButton?.addEventListener("click", cancelManage);
         manageDoneButton?.addEventListener("click", finishManage);
-        summary?.addEventListener("pointerenter", pauseStatusTimer);
-        summary?.addEventListener("pointerleave", resumeStatusTimer);
+        surfaceMainButton?.addEventListener("click", showMainSurface);
+        surfaceArchiveButton?.addEventListener("click", showArchiveSurface);
+        status?.addEventListener("pointerenter", pauseStatusTimer);
+        status?.addEventListener("pointerleave", resumeStatusTimer);
         document.addEventListener("keydown", handleKeyDown);
         document.defaultView?.addEventListener("resize", updateStripLayout);
         for (const event of bookmarkEvents) {
@@ -824,7 +862,6 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         document.removeEventListener("keydown", handleKeyDown);
         toBlocks?.removeEventListener("click", hide);
         toBookmarks?.removeEventListener("click", show);
-        backToBlocks?.removeEventListener("click", hide);
         openSelectionButton?.removeEventListener("click", openSelected);
         moveSelectionButton?.removeEventListener("click", openMovePalette);
         deleteSelectionButton?.removeEventListener("click", deleteSelected);
@@ -834,8 +871,10 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         addRootFolderButton?.removeEventListener("click", handleAddRootFolder);
         manageCancelButton?.removeEventListener("click", cancelManage);
         manageDoneButton?.removeEventListener("click", finishManage);
-        summary?.removeEventListener("pointerenter", pauseStatusTimer);
-        summary?.removeEventListener("pointerleave", resumeStatusTimer);
+        surfaceMainButton?.removeEventListener("click", showMainSurface);
+        surfaceArchiveButton?.removeEventListener("click", showArchiveSurface);
+        status?.removeEventListener("pointerenter", pauseStatusTimer);
+        status?.removeEventListener("pointerleave", resumeStatusTimer);
         for (const event of bookmarkEvents) {
             event?.removeListener?.(scheduleRefresh);
         }

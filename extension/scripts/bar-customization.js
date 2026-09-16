@@ -11,6 +11,7 @@ const SLOT_NAMES = ["left", "right"];
 const BAR_LABELS = {
     none: "None",
     bookmarks: "Bookmarks",
+    recent: "Recently seen",
     cache: "Cache indicator",
     settings: "Settings",
     date: "Date",

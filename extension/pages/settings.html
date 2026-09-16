@@ -13,10 +13,8 @@
             <header id="header-bar">
                 <button class="button" id="back-button" type="button">← Back</button>
                 <div class="settings-header-status" aria-live="polite">
-                    <span id="unsaved-indicator" class="hidden">You have unsaved changes</span>
                     <span id="settings-status"></span>
                 </div>
-                <button class="button" id="save-all-button" type="button">Save all</button>
             </header>
 
             <main id="content-area">
@@ -32,6 +30,30 @@
                     <form class="settings-form" id="settings-form">
                         <section class="settings-page" id="sources" data-settings-page="sources" aria-labelledby="sources-heading">
                             <h2 class="settings-section-heading" id="sources-heading">Sources</h2>
+                            <fieldset id="account-sources-fieldset" disabled>
+                                <legend>Account sources</legend>
+                                <label class="inline account-feed-option">
+                                    <input id="include-feed" name="includeFeed" type="checkbox" />
+                                    <span>Include my Are.na feed</span>
+                                </label>
+                                <span class="notice">The most recent feed items are added to the cached source pool.</span>
+
+                                <div class="account-channel-header">
+                                    <p class="setting-label">My channels</p>
+                                    <button class="button" id="reload-account-channels" type="button">Reload channels</button>
+                                </div>
+                                <div class="channel-picker" id="owned-channel-picker">
+                                    <p class="channel-picker-empty">Connect your account to load channels.</p>
+                                </div>
+
+                                <p class="setting-label">Followed channels</p>
+                                <div class="channel-picker" id="followed-channel-picker">
+                                    <p class="channel-picker-empty">Connect your account to load channels.</p>
+                                </div>
+                                <span class="notice" id="account-channel-note"></span>
+                                <span class="notice" id="account-cost-note" hidden></span>
+                            </fieldset>
+
                             <fieldset>
                                 <legend>Manual sources</legend>
                                 <label class="setting-label" for="channel-slugs">Channel slugs</label>
@@ -57,8 +79,7 @@
                             </fieldset>
 
                             <div class="settings-actions settings-actions--compact settings-actions--cache">
-                                <button class="button source-save-button" type="button" id="save-refresh">Save &amp; Refresh</button>
-                                <span class="notice" id="cache-info">Cache idle</span>
+                                <span class="notice" id="cache-info">Up to date</span>
                                 <button
                                     class="button button--danger-hover clear-cache-button"
                                     type="button"
@@ -90,33 +111,6 @@
                                 </span>
                             </fieldset>
 
-                            <fieldset id="account-sources-fieldset" disabled>
-                                <legend>Account sources</legend>
-                                <label class="inline account-feed-option">
-                                    <input id="include-feed" name="includeFeed" type="checkbox" />
-                                    <span>Include my Are.na feed</span>
-                                </label>
-                                <span class="notice">The most recent feed items are added to the cached source pool.</span>
-
-                                <div class="account-channel-header">
-                                    <p class="setting-label">My channels</p>
-                                    <button class="button" id="reload-account-channels" type="button">Reload channels</button>
-                                </div>
-                                <div class="channel-picker" id="owned-channel-picker">
-                                    <p class="channel-picker-empty">Connect your account to load channels.</p>
-                                </div>
-
-                                <p class="setting-label">Followed channels</p>
-                                <div class="channel-picker" id="followed-channel-picker">
-                                    <p class="channel-picker-empty">Connect your account to load channels.</p>
-                                </div>
-                                <span class="notice" id="account-channel-note"></span>
-                                <span class="notice" id="account-cost-note" hidden></span>
-                            </fieldset>
-
-                            <div class="settings-actions settings-actions--compact">
-                                <button class="button source-save-button" type="button" id="save-account-refresh">Save &amp; Refresh</button>
-                            </div>
                         </section>
 
                         <section class="settings-page" id="display" data-settings-page="display" aria-labelledby="display-heading">
@@ -128,7 +122,7 @@
                                     <label class="inline"><input type="radio" name="theme" value="light" /> <span>Light</span></label>
                                     <label class="inline"><input type="radio" name="theme" value="dark" /> <span>Dark</span></label>
                                 </div>
-                                <span class="notice">Theme changes preview immediately and are applied everywhere after saving.</span>
+                                <span class="notice">Theme changes apply everywhere as soon as you pick one.</span>
                             </fieldset>
 
                             <fieldset>
@@ -237,8 +231,7 @@
                             </fieldset>
 
                             <div class="settings-actions settings-actions--compact">
-                                <button class="button" type="button" id="save-display">Save display settings</button>
-                                <button class="button" type="reset">Reset to defaults</button>
+                                <button class="button" type="button" id="reset-defaults">Reset to defaults</button>
                             </div>
                         </section>
 
@@ -268,20 +261,21 @@
                                 <span class="notice">Browsable in columns below the pinned links. Anything left over goes to the archive card behind it.</span>
 
                                 <div class="settings-actions settings-actions--compact">
-                                    <button class="button" id="save-bookmarks" type="button">Save bookmark settings</button>
                                     <button class="button" id="reset-new-markers" type="button">Reset new markers</button>
                                 </div>
                             </fieldset>
 
                             <fieldset>
                                 <legend>Deleted bookmarks</legend>
+                                <span class="notice">Open a batch to check each link and restore only the ones you want. A restored link goes back into its folder, recreated at the board root if it was deleted too.</span>
                                 <ul class="bookmark-trash-list" id="bookmark-trash"></ul>
                                 <div class="settings-actions settings-actions--compact">
                                     <button class="button button--danger-hover" id="clear-trash" type="button">Clear trash</button>
                                 </div>
                             </fieldset>
 
-                            <fieldset>
+                            <!-- Plan apply stays wired up for scripts/bookmark-plan.py but is a power-user tool, so it is kept out of the visible settings. -->
+                            <fieldset hidden>
                                 <legend>Apply plan</legend>
                                 <label class="setting-label" for="plan-json">Plan JSON</label>
                                 <textarea class="plan-json" id="plan-json" spellcheck="false"></textarea>
@@ -318,6 +312,15 @@
                                 <p>
                                     <strong>are.na blocks new tab</strong> swaps the default new tab for a curated selection of Are.na content. Each new tab pulls blocks from the sources you enable.
                                 </p>
+                                <p>
+                                    This is a personal fork of the original extension made by Leon
+                                    (<a href="https://lok.computer" target="_blank" rel="noopener">lok.computer</a>,
+                                    <a href="https://are.na/lok" target="_blank" rel="noopener">@lok</a> on Are.na).
+                                    The original lives on
+                                    <a href="https://github.com/l3ony2k/are.na-blocks-new-tab" target="_blank" rel="noopener">GitHub</a>
+                                    and in the
+                                    <a href="https://chromewebstore.google.com/detail/arena-blocks-new-tab/igojkfooklaplhnapbafjobcamcedieo" target="_blank" rel="noopener">Chrome Web Store</a>.
+                                </p>
                                 <h4>How manual sources work</h4>
                                 <p>Use <em>channel slugs</em> to pull blocks from public channels, and add individual <em>block IDs</em> when you want precise picks.</p>
                                 <p>Channel example: <code>https://www.are.na/lok/ephemeral-visions</code> → <code>ephemeral-visions</code></p>
@@ -327,111 +330,8 @@
                                     Are.na is a creative research platform for collecting ideas, references, and projects. Visit
                                     <a href="https://www.are.na" target="_blank" rel="noopener">are.na</a> to browse or create an account.
                                 </p>
-                                <h4>About the maker</h4>
-                                <p>
-                                    Hi, I’m Leon. You can find more of my work at <a href="https://lok.computer" target="_blank" rel="noopener">lok.computer</a>. I share on Are.na at
-                                    <a href="https://are.na/lok" target="_blank" rel="noopener">@lok</a>, on Bluesky at
-                                    <a href="https://bsky.app/profile/did:plc:2p3gp2g2teuwpuv4skhiik3i" target="_blank" rel="noopener">@lok.computer</a>, and on Mastodon at
-                                    <a href="https://rex.cat/@lok" target="_blank" rel="noopener">@lok@rex.cat</a>. Questions or ideas? Reach out through those links or open an issue on
-                                    <a href="https://github.com/l3ony2k/are.na-blocks-new-tab" target="_blank" rel="noopener">GitHub</a>.
-                                </p>
                             </fieldset>
 
-                            <fieldset class="settings-changelog">
-                                <legend>Changelog</legend>
-                                <ul class="changelog-list">
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.19</span>
-                                        <span class="changelog-date">2026-08-09</span>
-                                        <span class="changelog-desc">Improve cache reliability and keep displayed blocks stable during refreshes</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.18</span>
-                                        <span class="changelog-date">2026-07-27</span>
-                                        <span class="changelog-desc">Add customizable bars, date and time components, and block information controls</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.17</span>
-                                        <span class="changelog-date">2026-07-27</span>
-                                        <span class="changelog-desc">Add settings subpages, account sources, and manual themes</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.16</span>
-                                        <span class="changelog-date">2026-04-15</span>
-                                        <span class="changelog-desc">Refactor new tab startup to paint a clean background before rendering UI</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.15</span>
-                                        <span class="changelog-date">2026-03-12</span>
-                                        <span class="changelog-desc">Migrate to Are.na API v3 and fix manual cache refresh</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.14</span>
-                                        <span class="changelog-date">2026-01-13</span>
-                                        <span class="changelog-desc">Add changelog to settings page</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.13</span>
-                                        <span class="changelog-date">2026-01-12</span>
-                                        <span class="changelog-desc">Add unsaved changes indicator and dirty state tracking</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.12</span>
-                                        <span class="changelog-date">2026-01-12</span>
-                                        <span class="changelog-desc">Improve error handling and display in UI</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.11</span>
-                                        <span class="changelog-date">2025-11-27</span>
-                                        <span class="changelog-desc">Add cache status LED and improve tooltip info</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.10</span>
-                                        <span class="changelog-date">2025-10-12</span>
-                                        <span class="changelog-desc">Refactor code structure; improve readability and maintainability</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.9</span>
-                                        <span class="changelog-date">2025-10-12</span>
-                                        <span class="changelog-desc">Enhance settings functionality, improve cache handling</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.8</span>
-                                        <span class="changelog-date">2025-10-12</span>
-                                        <span class="changelog-desc">Enhance bookmark overflow handling and adjust styling</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.6</span>
-                                        <span class="changelog-date">2025-10-12</span>
-                                        <span class="changelog-desc">Enhance bookmark menu functionality and styling</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.5</span>
-                                        <span class="changelog-date">2025-10-12</span>
-                                        <span class="changelog-desc">Standardize naming across documentation and UI</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.4</span>
-                                        <span class="changelog-date">2025-10-12</span>
-                                        <span class="changelog-desc">Add tile size options, improve bookmark handling</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.3</span>
-                                        <span class="changelog-date">2025-10-11</span>
-                                        <span class="changelog-desc">Add block size selection and improve layout handling</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.2</span>
-                                        <span class="changelog-date">2025-10-11</span>
-                                        <span class="changelog-desc">Update documentation and improve UI layout</span>
-                                    </li>
-                                    <li class="changelog-item">
-                                        <span class="changelog-version">v0.1.1</span>
-                                        <span class="changelog-date">2025-10-11</span>
-                                        <span class="changelog-desc">Initial release</span>
-                                    </li>
-                                </ul>
-                            </fieldset>
                         </section>
                     </form>
                 </div>
@@ -451,7 +351,7 @@
                 <div class="settings-dialog-body">
                     <h2 id="clear-cache-dialog-title">Clear all cached blocks?</h2>
                     <p id="clear-cache-dialog-description">
-                        This will remove every cached block from this browser. It can help when the cache is not refreshing or appears stuck between extension versions. After clearing it, click <strong>Save &amp; Refresh</strong> to build a fresh cache.
+                        This will remove every cached block from this browser. It can help when the cache is not refreshing or appears stuck between extension versions. A fresh cache is built on the next refresh.
                     </p>
                 </div>
                 <div class="settings-dialog-actions">

@@ -377,19 +377,28 @@ export const fetchSourceBlocks = async ({
 // Returns ids, not blocks: the block records are in the block store and the
 // caller fetches only the few it is about to render, rather than this module
 // reaching into storage to hand back the whole selection.
+const shuffle = (values) => {
+    const copy = [...values];
+    for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+};
+
+// `exclude` is a preference, not a filter. A tab that draws short, or draws
+// nothing because every id was excluded, is worse than a repeat, so ids the
+// caller would rather not see are ranked last instead of being removed.
 export const chooseRandomBlockIds = (cache, count = 1, exclude = []) => {
     const pool = cache?.blockIds || [];
     if (!pool.length) return [];
 
     const excludeSet = new Set((exclude || []).map(String));
-    const filtered = pool.filter(id => !excludeSet.has(String(id)));
-    if (!filtered.length) return [];
-
-    const shuffled = [...filtered];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    const unseen = shuffle(pool.filter(id => !excludeSet.has(String(id))));
+    if (unseen.length >= count) {
+        return unseen.slice(0, count);
     }
 
-    return shuffled.slice(0, Math.min(count, shuffled.length));
+    const seen = shuffle(pool.filter(id => excludeSet.has(String(id))));
+    return [...unseen, ...seen].slice(0, Math.min(count, pool.length));
 };

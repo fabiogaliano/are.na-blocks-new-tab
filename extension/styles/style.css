@@ -69,6 +69,22 @@ html.theme-dark {
     --shadow-color: rgba(0, 0, 0, 0.4);
 }
 
+/* --- Motion ---------------------------------------------------------------- */
+/* Near-zero rather than `none` so transitionend/animationend still fire for any
+   code that waits on them. */
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        transition-delay: 0ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
 /* --- Base Layout ----------------------------------------------------------- */
 * {
     box-sizing: border-box;
@@ -317,10 +333,14 @@ body[data-view="bookmarks"] #launch-chips {
     line-height: inherit;
 }
 
-.button:hover,
+.button:hover {
+    background-color: var(--button-hover);
+}
+
 .button:focus-visible {
     background-color: var(--button-hover);
-    outline: none;
+    outline: 2px solid var(--link-color);
+    outline-offset: 2px;
 }
 
 .button--danger-hover:hover,
@@ -391,23 +411,21 @@ body[data-view="bookmarks"] #content-area {
     min-height: 0;
 }
 
-#bm-toolbar {
-    position: sticky;
-    top: 0;
-    z-index: 4;
+.bar-component--settings {
     display: flex;
-    flex: 0 0 35px;
     align-items: center;
-    gap: 10px;
-    padding: 5px 12px;
-    border-bottom: 1px solid var(--internal-border);
-    background: var(--bg-color);
+    gap: 8px;
 }
 
-.bm-toolbar-actions {
-    display: flex;
-    gap: 8px;
-    margin-left: auto;
+/* the bookmark actions only make sense while that view is open */
+.bm-bar-action {
+    display: none;
+}
+
+body[data-view="bookmarks"] .bm-bar-action:not([hidden]) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
 
 #bm-manage-note {
@@ -430,103 +448,145 @@ body[data-view="bookmarks"] #content-area {
     display: none;
 }
 
-/* --- Bookmarks stack (main + archive cards) -------------------------------- */
-#bm-stack {
-    position: relative;
+/* --- Bookmarks surface ----------------------------------------------------- */
+#bm-surface {
+    display: flex;
     flex: 1;
+    flex-direction: column;
     min-height: 0;
-    padding: 10px 12px 16px;
+    padding: 10px 12px 14px;
+    overflow-y: auto;
 }
 
-#bm-stack[hidden] {
+#bm-surface[hidden] {
     display: none;
 }
 
-.bm-card-surface {
-    position: absolute;
-    inset: 10px 12px 16px;
+.bm-sec {
+    margin-bottom: 14px;
+}
+
+/* the folder browser takes whatever height the pinned sections leave */
+.bm-sec--grow {
     display: flex;
+    flex: 1;
     flex-direction: column;
-    border: 1px solid var(--block-border);
-    /* three planes: page bg, card, then the blocks inside it */
-    background: var(--header-bg);
-    box-shadow: 0 8px 24px var(--shadow-color);
-    transform-origin: center bottom;
-    transition: transform 230ms ease-out, box-shadow 230ms ease-out;
+    min-height: 0;
+    margin-bottom: 0;
 }
 
-.bm-card-surface.is-front {
-    z-index: 2;
-    transform: translateY(0) scale(1);
+.bm-sec-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
-.bm-card-surface.is-back {
-    z-index: 1;
-    transform: translateY(18px) scale(0.985);
+.bm-sec-head .bm-section-title {
+    flex: 1;
+    min-width: 0;
+}
+
+.bm-seg {
+    display: flex;
+    flex: none;
+    border: 1px solid var(--internal-border);
+}
+
+.bm-seg button {
+    padding: 2px 9px;
+    border: none;
+    border-right: 1px solid var(--internal-border);
+    background: none;
+    color: var(--meta-color);
+    font: inherit;
+    font-size: 11px;
     cursor: pointer;
 }
 
-.bm-card-surface.is-back .bm-card-scroll {
-    overflow: hidden;
-    pointer-events: none;
+.bm-seg button:last-child {
+    border-right: none;
 }
 
-.bm-card-bar {
-    display: flex;
-    flex: none;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 8px 14px;
-    border-bottom: 1px solid var(--header-border);
-    background: var(--header-bg);
+.bm-seg button:hover {
+    background: var(--button-bg);
 }
 
-.bm-card-title {
+.bm-seg button.is-active {
+    background: var(--button-bg);
     color: var(--text-color);
-}
-
-.bm-card-meta {
-    font-size: 10px;
-    color: var(--meta-color);
 }
 
 .bm-breadcrumb {
     color: var(--link-color);
 }
 
-.bm-card-scroll {
-    flex: 1;
-    min-height: 0;
-    padding: 14px 16px;
-    overflow-y: auto;
+/* the dash only earns its place once a folder path follows it */
+.bm-dash {
+    display: none;
 }
 
-.bm-card-scroll--flush {
-    padding: 0;
+.bm-section-title:has(.bm-breadcrumb:not([hidden]):not(:empty)) .bm-dash {
+    display: inline;
+}
+
+.bm-breadcrumb[hidden] {
+    display: none;
+}
+
+/* transient toast: undo, trash and manage results, gone after a few seconds */
+#bm-status {
+    position: fixed;
+    left: 12px;
+    bottom: 12px;
+    z-index: 6;
+    padding: 5px 10px;
+    border: 1px solid var(--internal-border);
+    background: var(--header-bg);
+    color: var(--meta-color);
+    box-shadow: 0 4px 12px var(--shadow-color);
+}
+
+#bm-status[hidden] {
+    display: none;
 }
 
 .bm-section-title {
     display: flex;
     gap: 10px;
     align-items: center;
-    margin: 4px 0 8px;
-    font-size: 12px;
+    margin: 4px 0 6px;
+    font-size: 10px;
     font-weight: normal;
     color: var(--meta-color);
 }
 
-.bm-section-title::after {
-    content: "";
-    flex: 1;
-    height: 1px;
-    background: var(--internal-border);
+.bm-pinned-block {
+    margin-bottom: 14px;
+    border: 1px solid var(--internal-border);
+    background: var(--block-bg);
 }
 
-.bm-pinned-block {
-    margin-bottom: 12px;
-    border: 1px solid var(--block-border);
-    background: var(--block-bg);
+/* a grouped block lays its groups side by side, so each type keeps its own column */
+.bm-pinned-block.is-grouped {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.bm-pinned-group {
+    border-right: 1px solid var(--internal-border);
+}
+
+.bm-pinned-group:last-child {
+    border-right: 0;
+}
+
+.bm-group-label {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--internal-border);
+    color: var(--meta-color);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
 }
 
 /* wide screens get more columns of links rather than stretched rows */
@@ -535,20 +595,29 @@ body[data-view="bookmarks"] #content-area {
     grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
 }
 
+/* inside a group the rows are already one column wide, so they stack */
+.bm-pinned-group .bm-pinned-rows {
+    grid-template-columns: 1fr;
+}
+
+.bm-pinned-group .bm-pinned-row {
+    border-right: 0;
+}
+
 .bm-pinned-row {
     border-right: 1px solid var(--internal-border);
 }
 
 .bm-columns {
     display: grid;
+    flex: 1;
     grid-template-columns: 1fr 1fr 1.6fr;
-    min-height: 340px;
-    border: 1px solid var(--block-border);
+    min-height: 240px;
+    border: 1px solid var(--internal-border);
 }
 
-.bm-card-scroll--flush .bm-columns {
-    height: 100%;
-    border: none;
+.bm-columns[hidden] {
+    display: none;
 }
 
 .bm-col {
@@ -572,7 +641,7 @@ body[data-view="bookmarks"] #content-area {
     justify-content: space-between;
     gap: 8px;
     padding: 7px 10px;
-    border-bottom: 1px solid var(--header-border);
+    border-bottom: 1px solid var(--internal-border);
     background: var(--header-bg);
     color: var(--meta-color);
     font-size: 10px;
@@ -655,12 +724,6 @@ body[data-view="bookmarks"] #content-area {
 .bm-col-empty {
     padding: 10px;
     color: var(--meta-color);
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .bm-card-surface {
-        transition: none;
-    }
 }
 
 #bm-board[hidden] {
@@ -1085,12 +1148,6 @@ body[data-page="settings"] #header-bar {
     justify-content: space-between;
 }
 
-#unsaved-indicator {
-    font-size: 0.85rem;
-    color: #cc3333;
-    font-weight: 500;
-}
-
 .settings-header-status {
     display: flex;
     align-items: center;
@@ -1105,19 +1162,6 @@ body[data-page="settings"] #header-bar {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-/* Dirty state for save buttons */
-.button.is-dirty {
-    background-color: #cc3333;
-    border-color: #aa2222;
-    color: white;
-}
-
-.button.is-dirty:hover,
-.button.is-dirty:focus-visible {
-    background-color: #ee4444;
-    border-color: #cc3333;
 }
 
 body[data-page="new-tab"] #blocks-container {
@@ -1214,6 +1258,12 @@ body[data-page="settings"] #blocks-container {
     text-align: left;
     /* border: 1px solid var(--block-border); */
     background-color: var(--block-bg);
+    overflow: hidden;
+}
+
+/* Scrolling is opt-in: a long text block is cut off until the reader asks for
+   the rest, so a tile never swallows a stray wheel gesture on arrival. */
+.block-main--text.is-expanded .text-tile {
     overflow: auto;
 }
 
@@ -1221,6 +1271,41 @@ body[data-page="settings"] #blocks-container {
     width: 100%;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.block-main--text.is-clamped:not(.is-expanded)::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 96px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, transparent, var(--block-bg) 72%);
+}
+
+.tile-read-more {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    z-index: 1;
+    display: none;
+    background-color: var(--button-bg);
+    border: 1px solid var(--internal-border);
+    color: var(--text-color);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 8px;
+    cursor: pointer;
+}
+
+.block-main--text.is-clamped .tile-read-more,
+.block-main--text.is-expanded .tile-read-more {
+    display: block;
+}
+
+.tile-read-more:hover {
+    background-color: var(--button-hover);
 }
 
 .block-main .tile-chip {
@@ -1315,10 +1400,27 @@ body[data-page="settings"] #blocks-container {
     text-decoration: none;
 }
 
-.block-meta-row a:hover,
+.block-meta-row a:hover {
+    text-decoration: underline;
+}
+
 .block-meta-row a:focus-visible {
     text-decoration: underline;
-    outline: none;
+    outline: 2px solid var(--link-color);
+    outline-offset: 2px;
+}
+
+.block-main-link:focus-visible,
+.tile-read-more:focus-visible {
+    outline: 2px solid var(--link-color);
+    /* Inset: `.block-main` clips its children, so an outset ring would be cut. */
+    outline-offset: -2px;
+}
+
+.block-title:focus-visible,
+.block-card:focus-visible {
+    outline: 2px solid var(--link-color);
+    outline-offset: 2px;
 }
 
 .block-empty {
@@ -1363,6 +1465,182 @@ html.theme-light #footer-bar {
     :root:not(.theme-light):not(.theme-dark) #footer-bar {
         border-top-color: var(--internal-border);
     }
+}
+
+/* --- Recently Seen Rail ---------------------------------------------------- */
+.bar-component--recent {
+    flex: 0 0 auto;
+}
+
+#recent-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.recent-count {
+    color: var(--meta-color);
+    font-variant-numeric: tabular-nums;
+}
+
+.recent-count[hidden] {
+    display: none;
+}
+
+#recent-rail {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 12;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--header-bg);
+    border-top: 1px solid var(--header-border);
+    box-shadow: 0 -8px 24px var(--shadow-color);
+}
+
+/* The rail sits on top of the blocks, not on top of the bottom bar, so it has
+   to know whether that bar is switched on. */
+body:has(#footer-bar:not([hidden])) #recent-rail {
+    bottom: 35px;
+}
+
+#recent-rail[hidden] {
+    display: none;
+}
+
+#recent-rail-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--internal-border);
+    color: var(--meta-color);
+}
+
+.recent-rail-title {
+    color: var(--text-color);
+}
+
+.recent-rail-count {
+    font-variant-numeric: tabular-nums;
+}
+
+.recent-rail-count[hidden] {
+    display: none;
+}
+
+.recent-rail-hint {
+    margin-left: auto;
+}
+
+#recent-rail-track {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+#recent-rail-track[hidden] {
+    display: none;
+}
+
+.recent-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: none;
+}
+
+.recent-group + .recent-group {
+    padding-left: 12px;
+    border-left: 1px solid var(--internal-border);
+}
+
+.recent-group-label {
+    margin: 0;
+    font-size: 10px;
+    font-weight: normal;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--meta-color);
+}
+
+.recent-group-row {
+    display: flex;
+    gap: 8px;
+}
+
+.recent-thumb {
+    position: relative;
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 64px;
+    height: 64px;
+    overflow: hidden;
+    background-color: var(--block-bg);
+    border: 1px solid var(--internal-border);
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 0.2s ease;
+}
+
+.recent-thumb:hover,
+.recent-thumb:focus-visible {
+    border-color: var(--block-border);
+    outline: 2px solid var(--link-color);
+    outline-offset: 1px;
+}
+
+.recent-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.recent-thumb-text {
+    padding: 6px;
+    overflow: hidden;
+    font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    font-size: 9px;
+    line-height: 1.25;
+    color: var(--meta-color);
+}
+
+.recent-thumb-caption {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 1px 3px;
+    background-color: var(--block-bg);
+    border-top: 1px solid var(--internal-border);
+    color: var(--meta-color);
+    font-size: 9px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.recent-thumb:hover .recent-thumb-caption,
+.recent-thumb:focus-visible .recent-thumb-caption {
+    opacity: 1;
+}
+
+#recent-rail-empty {
+    margin: 0;
+    padding: 16px 12px;
+    color: var(--meta-color);
+}
+
+#recent-rail-empty[hidden] {
+    display: none;
 }
 
 /* --- Settings Form --------------------------------------------------------- */
@@ -1641,57 +1919,6 @@ form.settings-form a {
     padding: 0.125rem 0.3rem;
 }
 
-/* --- Changelog Section ----------------------------------------------------- */
-.settings-changelog {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.settings-changelog legend {
-    font-size: 1.1rem;
-    font-weight: 600;
-}
-
-.changelog-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.changelog-item {
-    display: grid;
-    grid-template-columns: 70px 90px 1fr;
-    gap: 12px;
-    align-items: baseline;
-    font-size: 0.9rem;
-    padding: 6px 0;
-    border-bottom: 1px solid var(--internal-border);
-}
-
-.changelog-item:last-child {
-    border-bottom: none;
-}
-
-.changelog-version {
-    font-weight: 600;
-    font-family: ui-monospace, Menlo, Monaco, "Cascadia Mono", "Segoe UI Mono", "Roboto Mono", monospace;
-    color: var(--link-color);
-}
-
-.changelog-date {
-    color: var(--meta-color);
-    font-size: 0.85rem;
-    font-family: ui-monospace, Menlo, Monaco, "Cascadia Mono", "Segoe UI Mono", "Roboto Mono", monospace;
-}
-
-.changelog-desc {
-    color: var(--text-color);
-}
-
 label.setting-label {
     display: flex;
     flex-direction: column;
@@ -1842,7 +2069,7 @@ textarea {
     list-style: none;
 }
 
-.bookmark-trash-list li {
+.bookmark-trash-list > li {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1851,13 +2078,137 @@ textarea {
     border-bottom: 1px solid var(--internal-border);
 }
 
-.bookmark-trash-list li:last-child {
+.bookmark-trash-list > li:last-child {
     padding-bottom: 0;
     border-bottom: 0;
 }
 
 .bookmark-trash-empty {
     color: var(--meta-color);
+}
+
+.bookmark-trash-list > li.bookmark-trash-entry {
+    display: block;
+}
+
+.bookmark-trash-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.bookmark-trash-toggle {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: 0;
+    padding: 4px 0;
+    color: var(--text-color);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.bookmark-trash-toggle::before {
+    content: "▸";
+    flex: 0 0 auto;
+    color: var(--meta-color);
+}
+
+.bookmark-trash-toggle[aria-expanded="true"]::before {
+    content: "▾";
+}
+
+.bookmark-trash-toggle:hover {
+    text-decoration: underline;
+}
+
+.bookmark-trash-toggle:focus-visible {
+    outline: 2px solid var(--link-color);
+    outline-offset: 2px;
+}
+
+.bookmark-trash-links {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 8px 0 0;
+    padding: 8px 0 0 18px;
+    list-style: none;
+    border-top: 1px solid var(--internal-border);
+}
+
+.bookmark-trash-links[hidden] {
+    display: none;
+}
+
+.bookmark-trash-link {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 0.85rem;
+}
+
+.bookmark-trash-link label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    cursor: pointer;
+}
+
+.bookmark-trash-link-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bookmark-trash-link-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+    flex: 0 1 auto;
+    color: var(--meta-color);
+    font-size: 0.8rem;
+}
+
+.bookmark-trash-link-folder {
+    flex: 0 0 auto;
+}
+
+.bookmark-trash-link-url {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--link-color);
+    text-decoration: none;
+}
+
+.bookmark-trash-link-url:hover {
+    text-decoration: underline;
+}
+
+.bookmark-trash-link-url:focus-visible {
+    outline: 2px solid var(--link-color);
+    outline-offset: 2px;
+}
+
+.bookmark-trash-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+    padding-left: 18px;
+}
+
+.bookmark-trash-actions[hidden] {
+    display: none;
 }
 
 .plan-json {
@@ -1911,6 +2262,89 @@ textarea {
     color: var(--meta-color);
 }
 
+/* --- Settings slide-over --------------------------------------------------- */
+/* `inert` is the single source of open/closed: it removes the panel from focus
+   and hit-testing, and drives the visuals, so the two cannot drift apart. */
+.slide-over {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    justify-content: flex-end;
+    visibility: visible;
+    transition: visibility 0s linear 0s;
+}
+
+.slide-over[inert] {
+    visibility: hidden;
+    /* Held back until the panel has slid out, otherwise it vanishes mid-motion. */
+    transition-delay: 240ms;
+}
+
+.slide-over-scrim {
+    position: absolute;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.45);
+    opacity: 1;
+    transition: opacity 240ms ease;
+}
+
+.slide-over[inert] .slide-over-scrim {
+    opacity: 0;
+}
+
+.slide-over-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: min(880px, 100%);
+    height: 100%;
+    background-color: var(--bg-color);
+    border-left: 1px solid var(--block-border);
+    box-shadow: -8px 0 0 var(--shadow-color);
+    transform: translateX(0);
+    transition: transform 240ms ease-out;
+}
+
+.slide-over[inert] .slide-over-panel {
+    transform: translateX(100%);
+}
+
+.slide-over-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex: 0 0 auto;
+    height: 35px;
+    padding: 0 10px;
+    background-color: var(--header-bg);
+    border-bottom: 1px solid var(--header-border);
+}
+
+.slide-over-title {
+    font-size: 12px;
+    color: var(--meta-color);
+}
+
+.slide-over-frame {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    border: 0;
+    background-color: var(--bg-color);
+}
+
+/* The slide-over bar already carries the close control. */
+body[data-page="settings"][data-embedded="true"] #back-button {
+    display: none;
+}
+
+body[data-page="settings"][data-embedded="true"] .settings-header-status {
+    flex: 1;
+    justify-content: flex-start;
+}
+
 /* --- Utility --------------------------------------------------------------- */
 .hidden {
     display: none !important;
@@ -1958,12 +2392,6 @@ textarea {
 @keyframes cache-led-pulse {
     50% {
         opacity: 0.3;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .cache-led[data-status] {
-        animation: none;
     }
 }
 

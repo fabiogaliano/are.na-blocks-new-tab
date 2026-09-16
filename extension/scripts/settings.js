@@ -13,14 +13,21 @@ import { getChannelRequestCost } from "./arena.js";
 import { createBarEditor } from "./bar-customization.js";
 import { canonicalizeSettings, classifySettingsChanges } from "./settings-model.js";
 import { applyTheme } from "./theme.js";
-import { formatCountdown, formatRelativeTime } from "./time.js";
+import { formatRelativeTime } from "./time.js";
+import { describeCacheStatus } from "./cache-status.js";
+import { SETTINGS_PANEL_CHANNEL } from "./settings-panel.js";
+import { createAutoSaver } from "./settings-autosave.js";
 import { getRequestBudget } from "./rate-limiter.js";
 import { runtimeCacheLifecycle } from "./cache-refresh.js";
 import { applyPlan, resolvePlan, validatePlan } from "./bookmark-plan-runner.js";
-import { clearTrash, readTrash, restoreEntry } from "./bookmarks-trash.js";
+import { clearTrash, listEntryLinks, readTrash, restoreEntry, restoreSelection } from "./bookmarks-trash.js";
 import { resetNewMarkers } from "./bookmarks-state.js";
 
 const EMPTY_AUTH = { token: "", user: null };
+
+// Rendered inside the new tab's slide-over rather than its own tab: the host
+// owns closing, so this page asks for it rather than calling window.close().
+const embedded = window.parent !== window;
 
 const state = {
     settings: canonicalizeSettings(),
@@ -40,13 +47,22 @@ const state = {
     followedTotal: 0,
     catalogLoaded: false,
     working: false,
-    sourcesDirty: false,
-    displayDirty: false,
+    // A source edit is saved at once but its cache refresh is held back until
+    // the user leaves Sources, so one editing session costs one Are.na sync.
+    pendingSourceRefresh: false,
+    activeSection: "sources",
     resolvedPlan: null,
-    bookmarkTrash: []
+    bookmarkTrash: [],
+    // Kept across re-renders: restoring one link should not fold the batch the
+    // user is still working through.
+    expandedTrash: new Set()
 };
 
 let settingsScrollFrame = null;
+let statusTimer = null;
+
+// Long enough to read "Saved", short enough that the bar is quiet by default.
+const STATUS_LINGER_MS = 1800;
 
 const elements = {
     form: document.getElementById("settings-form"),
@@ -75,11 +91,7 @@ const elements = {
     clearCacheDialog: document.getElementById("clear-cache-dialog"),
     clearCacheCancelButton: document.getElementById("clear-cache-cancel"),
     clearCacheConfirmButton: document.getElementById("clear-cache-confirm"),
-    sourceSaveButtons: document.querySelectorAll(".source-save-button"),
-    displaySaveButton: document.getElementById("save-display"),
     backButton: document.getElementById("back-button"),
-    saveAllButton: document.getElementById("save-all-button"),
-    unsavedIndicator: document.getElementById("unsaved-indicator"),
     settingsStatus: document.getElementById("settings-status"),
     navButtons: document.querySelectorAll("[data-settings-nav]"),
     pages: document.querySelectorAll("[data-settings-page]"),
@@ -99,7 +111,7 @@ const elements = {
     launchFolder: document.getElementById("launch-folder"),
     pinnedFolders: document.getElementById("pinned-folders"),
     mainFolders: document.getElementById("main-folders"),
-    bookmarksSaveButton: document.getElementById("save-bookmarks"),
+    resetDefaultsButton: document.getElementById("reset-defaults"),
     resetNewMarkersButton: document.getElementById("reset-new-markers"),
     bookmarkTrash: document.getElementById("bookmark-trash"),
     clearTrashButton: document.getElementById("clear-trash"),
@@ -180,7 +192,6 @@ async function init() {
         if (window.location.hash) {
             requestAnimationFrame(() => scrollToSettingsSection(initialSection, { behavior: "auto", updateHash: false }));
         }
-        updateDirtyState();
     } catch (error) {
         console.error("Failed to init settings", error);
         showStatus(`Error: ${sanitizeErrorLabel(error.message)}`);
@@ -271,20 +282,20 @@ function populateForm(settings = state.settings) {
 }
 
 function wireEvents() {
-    elements.form?.addEventListener("reset", handleReset);
+    elements.form?.addEventListener("submit", (event) => event.preventDefault());
     elements.blockCount?.addEventListener("input", () => {
         updateBlockCountOutput();
-        updateDirtyState();
+        scheduleSave();
     });
     elements.tileSize?.addEventListener("input", () => {
         updateTileSizeOutput();
-        updateDirtyState();
+        scheduleSave();
     });
     elements.themeRadios.forEach((radio) => {
         radio.addEventListener("change", (event) => {
             if (event.target.checked) {
                 updateTheme(event.target.value);
-                updateDirtyState();
+                scheduleSave();
             }
         });
     });
@@ -292,29 +303,27 @@ function wireEvents() {
         select.addEventListener("change", handleBarComponentChange);
     });
     [elements.dateFormat, elements.timeFormat].forEach((select) => {
-        select?.addEventListener("change", updateDirtyState);
+        select?.addEventListener("change", scheduleSave);
     });
     elements.blockMetaFields.forEach((checkbox) => {
-        checkbox.addEventListener("change", updateDirtyState);
+        checkbox.addEventListener("change", scheduleSave);
     });
     [elements.showHeader, elements.showFooter].forEach((checkbox) => {
         checkbox?.addEventListener("change", updateSettingsAccessWarning);
     });
-    elements.sourceSaveButtons.forEach((button) => button.addEventListener("click", handleSourcesSave));
     elements.clearCacheButton?.addEventListener("click", handleClearCacheOpen);
     elements.clearCacheCancelButton?.addEventListener("click", handleClearCacheCancel);
     elements.clearCacheConfirmButton?.addEventListener("click", handleClearCacheConfirm);
-    elements.displaySaveButton?.addEventListener("click", handleDisplaySave);
-    elements.bookmarksSaveButton?.addEventListener("click", handleBookmarksSave);
+    elements.resetDefaultsButton?.addEventListener("click", handleResetDefaults);
     elements.resetNewMarkersButton?.addEventListener("click", handleResetNewMarkers);
     elements.clearTrashButton?.addEventListener("click", handleClearTrash);
     elements.bookmarkTrash?.addEventListener("click", handleTrashClick);
+    elements.bookmarkTrash?.addEventListener("change", handleTrashChange);
     elements.planJson?.addEventListener("input", invalidatePlanPreview);
     elements.planFile?.addEventListener("change", handlePlanFile);
     elements.dryRunPlanButton?.addEventListener("click", handlePlanDryRun);
     elements.applyPlanButton?.addEventListener("click", handlePlanApply);
     elements.backButton?.addEventListener("click", handleBack);
-    elements.saveAllButton?.addEventListener("click", handleSaveAll);
     elements.connectArenaButton?.addEventListener("click", handleConnectArena);
     elements.disconnectArenaButton?.addEventListener("click", handleDisconnectArena);
     elements.reloadAccountChannelsButton?.addEventListener("click", () => loadAccountCatalog());
@@ -328,14 +337,27 @@ function wireEvents() {
     });
 
     [elements.channelSlugs, elements.blockIds, elements.showHeader, elements.showFooter, elements.includeFeed, elements.bookmarksRoot, elements.hiddenFolders, elements.launchFolder, elements.pinnedFolders, elements.mainFolders].forEach((control) => {
-        control?.addEventListener("input", updateDirtyState);
-        control?.addEventListener("change", updateDirtyState);
+        control?.addEventListener("input", scheduleSave);
+        control?.addEventListener("change", scheduleSave);
     });
-    elements.filters.forEach((checkbox) => checkbox.addEventListener("change", updateDirtyState));
+    elements.filters.forEach((checkbox) => checkbox.addEventListener("change", scheduleSave));
+    // `focusout` rather than `blur`: it bubbles, so one listener covers a form
+    // whose fields are rebuilt as the account catalog loads.
+    elements.form?.addEventListener("focusout", () => autoSaver.flush());
     elements.ownedChannelPicker?.addEventListener("change", handleAccountChannelChange);
     elements.followedChannelPicker?.addEventListener("change", handleAccountChannelChange);
 
     storage?.onChanged?.addListener(handleStorageChange);
+
+    // Nothing unloads an iframe the host merely hides, so the host says when it
+    // closed and that is this page's cue to spend the held-back refresh.
+    window.addEventListener("pagehide", handlePageHide);
+
+    if (embedded) {
+        document.body.dataset.embedded = "true";
+        document.addEventListener("keydown", handleEmbeddedKeyDown);
+        window.addEventListener("message", handlePanelMessage);
+    }
 }
 
 function readSectionFromHash() {
@@ -349,6 +371,10 @@ function getSettingsSection(sectionName) {
 
 function setActiveSettingsSection(sectionName) {
     const nextSection = getSettingsSection(sectionName)?.dataset.settingsPage || "sources";
+    if (state.activeSection === "sources" && nextSection !== "sources") {
+        flushSourceRefresh();
+    }
+    state.activeSection = nextSection;
     elements.navButtons.forEach((button) => {
         const active = button.dataset.settingsNav === nextSection;
         button.classList.toggle("is-active", active);
@@ -509,29 +535,6 @@ async function resolveBoardRootId() {
     return String(current?.id || "1");
 }
 
-async function handleBookmarksSave(event) {
-    event.preventDefault();
-    if (state.working) {
-        return;
-    }
-    const nextSettings = { ...state.settings, ...gatherBookmarkSettings() };
-    if (!classifySettingsChanges(nextSettings, state.settings).changed) {
-        showStatus("Bookmark settings are already saved.");
-        return;
-    }
-    updateWorking(true, "Saving bookmark settings...");
-    try {
-        state.settings = await saveSettings(nextSettings);
-        populateForm();
-        updateDirtyState();
-        showStatus("Bookmark settings saved.");
-    } catch (error) {
-        showStatus(`Save failed: ${sanitizeErrorLabel(error.message)}`);
-    } finally {
-        updateWorking(false);
-    }
-}
-
 async function handleResetNewMarkers(event) {
     event.preventDefault();
     updateWorking(true, "Clearing new markers...");
@@ -551,6 +554,8 @@ async function renderBookmarkTrash() {
     }
     const trash = await readTrash();
     state.bookmarkTrash = trash.entries;
+    const live = new Set(trash.entries.map((entry) => entry.id));
+    state.expandedTrash = new Set([...state.expandedTrash].filter((id) => live.has(id)));
     elements.bookmarkTrash.innerHTML = "";
     if (!trash.entries.length) {
         const empty = document.createElement("li");
@@ -566,32 +571,192 @@ async function renderBookmarkTrash() {
         elements.clearTrashButton.disabled = false;
     }
     for (const entry of trash.entries) {
-        const item = document.createElement("li");
-        const label = document.createElement("span");
-        label.textContent = `${entry.label} · ${formatRelativeTime(entry.deletedAt)}`;
-        const restore = document.createElement("button");
-        restore.className = "button";
-        restore.type = "button";
-        restore.dataset.restoreTrash = entry.id;
-        restore.textContent = "restore";
-        item.append(label, restore);
-        elements.bookmarkTrash.append(item);
+        elements.bookmarkTrash.append(buildTrashEntry(entry));
+    }
+}
+
+function buildTrashEntry(entry) {
+    const item = document.createElement("li");
+    item.className = "bookmark-trash-entry";
+
+    const links = listEntryLinks(entry);
+    const head = document.createElement("div");
+    head.className = "bookmark-trash-head";
+
+    const toggle = document.createElement("button");
+    toggle.className = "bookmark-trash-toggle";
+    toggle.type = "button";
+    toggle.dataset.toggleTrash = entry.id;
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = `${entry.label} · ${formatRelativeTime(entry.deletedAt)}`;
+
+    const restoreAll = document.createElement("button");
+    restoreAll.className = "button";
+    restoreAll.type = "button";
+    restoreAll.dataset.restoreTrash = entry.id;
+    restoreAll.textContent = "restore all";
+    head.append(toggle, restoreAll);
+
+    const expanded = state.expandedTrash.has(entry.id);
+    toggle.setAttribute("aria-expanded", String(expanded));
+
+    const list = document.createElement("ul");
+    list.className = "bookmark-trash-links";
+    list.hidden = !expanded;
+    for (const link of links) {
+        list.append(buildTrashLink(link));
+    }
+    if (!links.length) {
+        const empty = document.createElement("li");
+        empty.className = "bookmark-trash-empty";
+        empty.textContent = "Only empty folders in this batch.";
+        list.append(empty);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "bookmark-trash-actions";
+    actions.hidden = !expanded;
+    const restoreSelected = document.createElement("button");
+    restoreSelected.className = "button";
+    restoreSelected.type = "button";
+    restoreSelected.dataset.restoreSelection = entry.id;
+    restoreSelected.disabled = true;
+    restoreSelected.textContent = "restore selected";
+    const count = document.createElement("span");
+    count.className = "notice";
+    count.dataset.selectionCount = entry.id;
+    count.textContent = "0 selected";
+    actions.append(restoreSelected, count);
+
+    item.append(head, list, actions);
+    return item;
+}
+
+function buildTrashLink(link) {
+    const row = document.createElement("li");
+    row.className = "bookmark-trash-link";
+
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.trashLink = link.path;
+    const title = document.createElement("span");
+    title.className = "bookmark-trash-link-title";
+    title.textContent = link.title;
+    label.append(checkbox, title);
+
+    const meta = document.createElement("span");
+    meta.className = "bookmark-trash-link-meta";
+    if (link.folderPath) {
+        const folder = document.createElement("span");
+        folder.className = "bookmark-trash-link-folder";
+        folder.textContent = link.folderPath;
+        meta.append(folder);
+    }
+    // The point of the list is to judge each link before taking it back, so the
+    // url has to be openable rather than just readable.
+    const open = document.createElement("a");
+    open.className = "bookmark-trash-link-url";
+    open.href = link.url;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.textContent = formatTrashUrl(link.url);
+    open.title = link.url;
+    meta.append(open);
+
+    row.append(label, meta);
+    return row;
+}
+
+function formatTrashUrl(url) {
+    try {
+        const parsed = new URL(url);
+        return `${parsed.hostname.replace(/^www\./i, "")}${parsed.pathname === "/" ? "" : parsed.pathname}`;
+    } catch {
+        return url;
+    }
+}
+
+function getTrashEntryElement(entryId) {
+    return elements.bookmarkTrash?.querySelector(`[data-toggle-trash="${entryId}"]`)?.closest(".bookmark-trash-entry") || null;
+}
+
+function getSelectedTrashPaths(entryId) {
+    const item = getTrashEntryElement(entryId);
+    return Array.from(item?.querySelectorAll("[data-trash-link]:checked") || [], (input) => input.dataset.trashLink);
+}
+
+function updateTrashSelection(entryId) {
+    const item = getTrashEntryElement(entryId);
+    if (!item) {
+        return;
+    }
+    const selected = getSelectedTrashPaths(entryId).length;
+    const button = item.querySelector("[data-restore-selection]");
+    const count = item.querySelector("[data-selection-count]");
+    if (button) {
+        button.disabled = !selected;
+    }
+    if (count) {
+        count.textContent = `${selected} selected`;
+    }
+}
+
+function toggleTrashEntry(entryId) {
+    const item = getTrashEntryElement(entryId);
+    const toggle = item?.querySelector("[data-toggle-trash]");
+    if (!item || !toggle) {
+        return;
+    }
+    const expanded = toggle.getAttribute("aria-expanded") === "true";
+    toggle.setAttribute("aria-expanded", String(!expanded));
+    item.querySelector(".bookmark-trash-links").hidden = expanded;
+    item.querySelector(".bookmark-trash-actions").hidden = expanded;
+    if (expanded) {
+        state.expandedTrash.delete(entryId);
+    } else {
+        state.expandedTrash.add(entryId);
     }
 }
 
 async function handleTrashClick(event) {
-    const button = event.target.closest("[data-restore-trash]");
-    if (!button || state.working || !bookmarks) {
+    const toggle = event.target.closest("[data-toggle-trash]");
+    if (toggle) {
+        toggleTrashEntry(toggle.dataset.toggleTrash);
         return;
     }
-    const entry = state.bookmarkTrash.find((candidate) => candidate.id === button.dataset.restoreTrash);
+    const selectionButton = event.target.closest("[data-restore-selection]");
+    if (selectionButton) {
+        const entryId = selectionButton.dataset.restoreSelection;
+        await runTrashRestore(entryId, (entry, rootId) => restoreSelection(entry, getSelectedTrashPaths(entryId), bookmarks, { rootId }));
+        return;
+    }
+    const restoreButton = event.target.closest("[data-restore-trash]");
+    if (restoreButton) {
+        await runTrashRestore(restoreButton.dataset.restoreTrash, (entry, rootId) => restoreEntry(entry, bookmarks, { rootId }));
+    }
+}
+
+function handleTrashChange(event) {
+    const checkbox = event.target.closest("[data-trash-link]");
+    const entry = checkbox?.closest(".bookmark-trash-entry")?.querySelector("[data-toggle-trash]");
+    if (entry) {
+        updateTrashSelection(entry.dataset.toggleTrash);
+    }
+}
+
+async function runTrashRestore(entryId, restore) {
+    if (state.working || !bookmarks) {
+        return;
+    }
+    const entry = state.bookmarkTrash.find((candidate) => candidate.id === entryId);
     if (!entry) {
         return;
     }
     updateWorking(true, "Restoring bookmarks...");
     try {
         const rootId = await resolveBoardRootId();
-        const result = await restoreEntry(entry, bookmarks, { rootId });
+        const result = await restore(entry, rootId);
         const orphanNote = result.orphaned ? ` · ${result.orphaned} to the board root, folder gone` : "";
         showStatus(`${result.created.length} restored${orphanNote}.`);
         await renderBookmarkTrash();
@@ -789,7 +954,6 @@ async function handlePlanApply(event) {
         await Promise.all([populateBookmarkRoots(), renderBookmarkTrash()]);
         ensureBookmarkRootOption(state.settings.bookmarksRootPath);
         elements.bookmarksRoot.value = state.settings.bookmarksRootPath;
-        updateDirtyState();
         state.resolvedPlan = null;
         elements.applyPlanButton.disabled = true;
     } catch (error) {
@@ -800,59 +964,82 @@ async function handlePlanApply(event) {
     }
 }
 
-async function handleDisplaySave(event) {
-    event.preventDefault();
+// --- Auto-save --------------------------------------------------------------
+
+const autoSaver = createAutoSaver({ commit: commitSettings });
+
+function scheduleSave() {
+    autoSaver.schedule();
+}
+
+async function commitSettings() {
     if (state.working) {
         return;
     }
-    const nextSettings = { ...state.settings, ...gatherDisplaySettings() };
-    if (!classifySettingsChanges(nextSettings, state.settings).changed) {
-        showStatus("Display settings are already saved.");
+    const nextSettings = { ...state.settings, ...gatherFormSettings() };
+    const changes = classifySettingsChanges(nextSettings, state.settings);
+    if (!changes.changed) {
         return;
     }
-    updateWorking(true, "Saving display settings...");
     try {
         state.settings = await saveSettings(nextSettings);
         updateTheme(state.settings.theme);
-        updateDirtyState();
-        showStatus("Display settings saved.");
+        if (changes.sourcesChanged) {
+            state.pendingSourceRefresh = true;
+        }
+        showStatus("Saved", { transient: true });
     } catch (error) {
-        console.error("Failed to save display settings", error);
+        console.error("Auto-save failed", error);
         showStatus(`Save failed: ${sanitizeErrorLabel(error.message)}`);
-    } finally {
-        updateWorking(false);
     }
 }
 
-function handleReset(event) {
-    event.preventDefault();
-    populateForm(canonicalizeSettings());
-    updateTheme(DEFAULT_SETTINGS.theme);
-    updateDirtyState();
-    showStatus("Defaults loaded. Save to apply.");
+/**
+ * Spends a refresh the source edits earned. Deliberately not wrapped in
+ * `updateWorking`: it can run while the user is reading another section, and
+ * the new tab already reports the sync in its cache status.
+ */
+async function flushSourceRefresh() {
+    await autoSaver.flush();
+    if (!state.pendingSourceRefresh) {
+        return;
+    }
+    state.pendingSourceRefresh = false;
+    try {
+        await runtimeCacheLifecycle.refresh({ force: true });
+    } catch (error) {
+        console.error("Source refresh failed", error);
+        showStatus(`Refresh failed: ${sanitizeErrorLabel(error.message)}`);
+    }
 }
 
-async function handleSourcesSave(event) {
+function handlePageHide() {
+    // Best effort only: an unloading page may not outlive the storage write.
+    flushSourceRefresh();
+}
+
+function handlePanelMessage(event) {
+    if (event.origin !== window.location.origin || event.data?.channel !== SETTINGS_PANEL_CHANNEL) {
+        return;
+    }
+    if (event.data.type === "closed") {
+        flushSourceRefresh();
+    }
+}
+
+async function handleResetDefaults(event) {
     event?.preventDefault?.();
     if (state.working) {
         return;
     }
-    const nextSettings = { ...state.settings, ...gatherSourceSettings() };
-    const settingsChanged = classifySettingsChanges(nextSettings, state.settings).changed;
-    updateWorking(true, settingsChanged ? "Saving sources..." : "Refreshing cache...");
-    try {
-        if (settingsChanged) {
-            state.settings = await saveSettings(nextSettings);
-            updateDirtyState();
-        }
-        const summary = await runtimeCacheLifecycle.refresh({ force: true });
-        showStatus(`Cache refreshed with ${summary?.blockCount || 0} block${summary?.blockCount === 1 ? "" : "s"}.`);
-    } catch (error) {
-        console.error("Refresh failed", error);
-        showStatus(`Refresh failed: ${sanitizeErrorLabel(error.message)}`);
-    } finally {
-        updateWorking(false);
+    // Auto-save means this writes the moment it is clicked, so it asks first.
+    if (!window.confirm("Reset all settings to defaults? This saves right away.")) {
+        return;
     }
+    autoSaver.cancel();
+    populateForm(canonicalizeSettings());
+    updateTheme(DEFAULT_SETTINGS.theme);
+    await commitSettings();
 }
 
 function handleClearCacheOpen(event) {
@@ -959,7 +1146,6 @@ async function handleDisconnectArena(event) {
         });
         renderAccountState();
         renderAccountCatalog(new Set());
-        updateDirtyState();
         await runtimeCacheLifecycle.refresh();
         showStatus("Are.na account disconnected and account sources removed.");
     } catch (error) {
@@ -1171,7 +1357,7 @@ function handleAccountChannelChange(event) {
         }
     });
     updateAccountCostNote(new Set(getSelectedAccountChannelSlugs()));
-    updateDirtyState();
+    scheduleSave();
 }
 
 function getSelectedAccountChannelSlugs() {
@@ -1187,7 +1373,7 @@ function getSelectedAccountChannelSlugs() {
 function handleBarComponentChange(event) {
     barEditor.select(event.target.dataset.barSlot, event.target.value);
     updateSettingsAccessWarning();
-    updateDirtyState();
+    scheduleSave();
 }
 
 function updateSettingsAccessWarning() {
@@ -1219,9 +1405,6 @@ function updateWorking(isWorking, message) {
             node.removeAttribute("data-prev-disabled");
         }
     });
-    if (elements.saveAllButton) {
-        elements.saveAllButton.disabled = isWorking;
-    }
     if (!isWorking) {
         renderAccountState();
     }
@@ -1235,14 +1418,6 @@ function getCooldownRemaining() {
         return 0;
     }
     return Math.max((state.cacheMeta.retryAt || 0) - Date.now(), 0);
-}
-
-function formatCacheProgress(progress) {
-    const total = progress?.channelsTotal;
-    if (!Number.isFinite(total) || total <= 0) {
-        return null;
-    }
-    return `${progress.channelsDone ?? 0}/${total} channel${total === 1 ? "" : "s"}`;
 }
 
 function scheduleCacheCooldownTick() {
@@ -1260,33 +1435,34 @@ function updateCacheInfo() {
         return;
     }
     const blockTotal = state.cache?.blockIds?.length || 0;
-    const timestamp = state.cacheMeta.lastUpdated;
-    const progress = formatCacheProgress(state.cacheMeta.progress);
-    const remaining = getCooldownRemaining();
     scheduleCacheCooldownTick();
 
-    if (state.cacheMeta.state === CACHE_STATE.working) {
-        const channel = state.cacheMeta.progress?.currentChannel;
-        elements.cacheInfo.textContent = progress
-            ? `Refreshing ${channel ? `${channel} · ` : ""}${progress}...`
-            : "Cache refresh in progress...";
-    } else if (state.cacheMeta.state === CACHE_STATE.cooldown) {
-        const synced = progress ? `Synced ${progress}` : "Are.na rate limit reached";
-        elements.cacheInfo.textContent = remaining > 0
-            ? `${synced} · resuming in ${formatCountdown(remaining)}`
-            : `${synced} · resuming now`;
-    } else if (state.cacheMeta.state === CACHE_STATE.error) {
-        elements.cacheInfo.textContent = sanitizeErrorLabel(state.cacheMeta.lastError);
-    } else if (blockTotal) {
-        elements.cacheInfo.textContent = `${blockTotal} cached block${blockTotal === 1 ? "" : "s"} · updated ${formatRelativeTime(timestamp)}`;
-    } else {
-        elements.cacheInfo.textContent = "No cached blocks yet.";
-    }
+    const { label } = describeCacheStatus({
+        state: state.cacheMeta.state,
+        progress: state.cacheMeta.progress,
+        retryAt: state.cacheMeta.retryAt,
+        lastUpdated: state.cacheMeta.lastUpdated,
+        blockCount: blockTotal,
+        errorLabel: sanitizeErrorLabel(state.cacheMeta.lastError)
+    });
+
+    // The settings notice has room the new tab button does not, so it keeps the
+    // shared wording and appends what the button leaves to its tooltip.
+    elements.cacheInfo.textContent = blockTotal
+        ? `${label} · ${blockTotal} cached block${blockTotal === 1 ? "" : "s"}`
+        : label;
 }
 
-function showStatus(message) {
-    if (elements.settingsStatus) {
-        elements.settingsStatus.textContent = message;
+function showStatus(message, { transient = false } = {}) {
+    if (!elements.settingsStatus) {
+        return;
+    }
+    clearTimeout(statusTimer);
+    elements.settingsStatus.textContent = message;
+    if (transient) {
+        statusTimer = setTimeout(() => {
+            elements.settingsStatus.textContent = "";
+        }, STATUS_LINGER_MS);
     }
 }
 
@@ -1318,12 +1494,15 @@ function handleStorageChange(changes, area) {
     if (changes[STORAGE_KEYS.bookmarkTrash]) {
         renderBookmarkTrash();
     }
-    if (changes[STORAGE_KEYS.settings] && !state.working && !state.sourcesDirty && !state.displayDirty) {
+    if (changes[STORAGE_KEYS.settings] && !state.working && !autoSaver.pending()) {
         getSettings().then((settings) => {
             state.settings = settings;
-            populateForm();
+            // Our own save echoes back here; repopulating then would only fight
+            // the caret. A form that already matches storage is left alone.
+            if (classifySettingsChanges({ ...settings, ...gatherFormSettings() }, settings).changed) {
+                populateForm();
+            }
             updateTheme(state.settings.theme);
-            updateDirtyState();
         });
     }
 }
@@ -1343,63 +1522,29 @@ function updateTileSizeOutput() {
     elements.tileSize.setAttribute("aria-valuetext", TILE_SIZE_LABEL_MAP[label] || label.toUpperCase());
 }
 
-function updateDirtyState() {
-    const changes = classifySettingsChanges({ ...state.settings, ...gatherFormSettings() }, state.settings);
-    state.sourcesDirty = changes.sourcesChanged;
-    state.displayDirty = changes.displayChanged;
-    const anyDirty = changes.changed;
-    elements.sourceSaveButtons.forEach((button) => button.classList.toggle("is-dirty", state.sourcesDirty));
-    elements.displaySaveButton?.classList.toggle("is-dirty", state.displayDirty);
-    elements.bookmarksSaveButton?.classList.toggle("is-dirty", state.displayDirty);
-    elements.saveAllButton?.classList.toggle("is-dirty", anyDirty);
-    elements.unsavedIndicator?.classList.toggle("hidden", !anyDirty);
-    if (anyDirty) {
-        window.addEventListener("beforeunload", handleBeforeUnload);
-    } else {
-        window.removeEventListener("beforeunload", handleBeforeUnload);
+function postToPanel(payload) {
+    if (!embedded) {
+        return;
     }
-}
-
-function handleBeforeUnload(event) {
-    event.preventDefault();
-    event.returnValue = "";
-    return "";
+    window.parent.postMessage({ channel: SETTINGS_PANEL_CHANNEL, ...payload }, window.location.origin);
 }
 
 function handleBack() {
+    if (embedded) {
+        requestPanelClose();
+        return;
+    }
     window.close();
 }
 
-async function handleSaveAll(event) {
-    event?.preventDefault?.();
-    if (state.working) {
-        return;
-    }
-    const formValues = gatherFormSettings();
-    const nextSettings = { ...state.settings, ...formValues };
-    const changes = classifySettingsChanges(nextSettings, state.settings);
-    if (!changes.changed) {
-        showStatus("No changes to save.");
-        return;
-    }
-    updateWorking(true, "Saving all settings...");
-    try {
-        state.settings = await saveSettings(nextSettings);
-        updateTheme(state.settings.theme);
-        updateDirtyState();
-        if (changes.sourcesChanged) {
-            showStatus("Settings saved. Refreshing cache...");
-            const summary = await runtimeCacheLifecycle.refresh();
-            showStatus(`Saved. Cache refreshed with ${summary?.blockCount || 0} block${summary?.blockCount === 1 ? "" : "s"}.`);
-        } else {
-            showStatus("All settings saved.");
-        }
-    } catch (error) {
-        console.error("Save all failed", error);
-        showStatus(`Save failed: ${sanitizeErrorLabel(error.message)}`);
-    } finally {
-        updateWorking(false);
-        updateDirtyState();
+function requestPanelClose() {
+    // The host runs the discard prompt, so it decides whether to honour this.
+    postToPanel({ type: "close-requested" });
+}
+
+function handleEmbeddedKeyDown(event) {
+    if (event.key === "Escape" && !event.defaultPrevented) {
+        requestPanelClose();
     }
 }
 

@@ -1,5 +1,5 @@
 import { CACHE_STATE, STORAGE_KEYS } from "./constants.js";
-import { formatCountdown, formatRelativeTime } from "./time.js";
+import { formatRelativeTime } from "./time.js";
 import { storage } from "./extension-api.js";
 import { chooseRandomBlockIds } from "./arena.js";
 import { getBlocks } from "./block-store.js";
@@ -11,6 +11,11 @@ import { createBarRenderer } from "./bar-customization.js";
 import { createBlockLayout } from "./block-layout.js";
 import { classifySettingsChanges } from "./settings-model.js";
 import { createBookmarksView } from "./bookmarks-view.js";
+import { describeCacheStatus } from "./cache-status.js";
+import { createSettingsPanel } from "./settings-panel.js";
+import { createRecentRail } from "./recent-rail.js";
+import { getRecentEntries, recordShownBlocks } from "./recent-store.js";
+import { softAvoidIds } from "./recent-model.js";
 
 const RESIZE_DEBOUNCE = 150;
 const COOLDOWN_TICK_MS = 1000;
@@ -99,7 +104,17 @@ const elements = {
   blocksView: document.getElementById("blocks-view"),
   bookmarksView: document.getElementById("bookmarks-view"),
   bookmarksBoard: document.getElementById("bm-board"),
-  bookmarksSummary: document.getElementById("bm-summary"),
+  bookmarksStatus: document.getElementById("bm-status"),
+  settingsPanel: document.getElementById("settings-panel"),
+  settingsFrame: document.getElementById("settings-frame"),
+  openSettings: document.getElementById("open-settings"),
+  recentRail: document.getElementById("recent-rail"),
+  recentRailTrack: document.getElementById("recent-rail-track"),
+  recentRailCount: document.getElementById("recent-rail-count"),
+  recentRailClose: document.getElementById("recent-rail-close"),
+  recentRailEmpty: document.getElementById("recent-rail-empty"),
+  recentButton: document.getElementById("recent-button"),
+  recentCount: document.getElementById("recent-count"),
 };
 
 let resizeTimer = null;
@@ -107,6 +122,7 @@ let cooldownTimer = null;
 
 const barComponents = {
   bookmarks: elements.bookmarkStrip,
+  recent: document.querySelector(".bar-component--recent"),
   cache: document.querySelector(".bar-component--cache"),
   settings: document.querySelector(".bar-component--settings"),
   date: elements.barDate,
@@ -128,10 +144,31 @@ const barView = createBarRenderer({
   dateTimeElement: elements.barDateTime,
 });
 
+createSettingsPanel({
+  root: elements.settingsPanel,
+  frame: elements.settingsFrame,
+  openButton: elements.openSettings,
+  closeButtons: Array.from(elements.settingsPanel?.querySelectorAll("[data-settings-close]") || []),
+  src: "../pages/settings.html",
+});
+
 const renderBlockLayout = createBlockLayout({
   container: elements.blocksContainer,
   contentArea: elements.contentArea,
   renderCard: renderBlockCard,
+});
+
+const recentRail = createRecentRail({
+  root: elements.recentRail,
+  track: elements.recentRailTrack,
+  countElements: [elements.recentCount, elements.recentRailCount],
+  toggleButton: elements.recentButton,
+  closeButton: elements.recentRailClose,
+  emptyElement: elements.recentRailEmpty,
+  onRestore: restoreBlock,
+  // The rail belongs to the blocks view; the bookmarks view has its own
+  // keyboard surface and would have nothing to put the block back onto.
+  canOpen: () => document.body.dataset.view !== "bookmarks",
 });
 
 const bookmarksView = createBookmarksView({
@@ -139,7 +176,7 @@ const bookmarksView = createBookmarksView({
   blocksView: elements.blocksView,
   boardContainer: elements.bookmarksBoard,
   strip: elements.bookmarkStrip,
-  summary: elements.bookmarksSummary,
+  status: elements.bookmarksStatus,
   settings: state.settings,
 });
 
@@ -209,8 +246,18 @@ function wireEvents() {
 
 async function renderAll() {
   await bookmarksView.mount(state.settings);
+  await recentRail.mount();
   await renderBlocks();
   updateCacheStatus();
+}
+
+// Shift-clicking a thumbnail puts that block back on the tab it fell off.
+function restoreBlock(block) {
+  if (!block) {
+    return;
+  }
+  state.currentBlocks = [block];
+  renderLayout([block]);
 }
 
 function toggleRegions() {
@@ -363,7 +410,17 @@ async function renderBlocks() {
   }
 
   const blockCount = Math.max(1, Number(state.settings?.blockCount) || 1);
-  const ids = chooseRandomBlockIds(state.cache, blockCount);
+  // Softly avoid what recent tabs already showed. The chooser treats this as a
+  // ranking, not a filter, so a small cache still fills the tab.
+  const recent = await getRecentEntries().catch((error) => {
+    console.warn("Could not read recently seen blocks", error);
+    return [];
+  });
+  const ids = chooseRandomBlockIds(
+    state.cache,
+    blockCount,
+    softAvoidIds(recent, state.cache.blockIds.length, blockCount)
+  );
   // Only the ids about to be drawn are read, so this cost no longer grows with
   // the size of the account. Most callers do not await this, so a store that
   // will not open has to end as an empty tab rather than a rejected promise.
@@ -381,6 +438,10 @@ async function renderBlocks() {
 
   state.currentBlocks = blocks;
   state.cacheMeta.blockCount = state.cache?.blockIds?.length ?? blocks.length;
+  // Not awaited: the tab should paint before the ring buffer is written, and a
+  // storage failure here must not cost the user the blocks they just drew.
+  recordShownBlocks(blocks.map((block) => block.id))
+    .catch((error) => console.warn("Could not record recently seen blocks", error));
   renderLayout(blocks);
 }
 
@@ -398,7 +459,24 @@ function renderLayout(blocks) {
   }
 
   renderBlockLayout(blocks, state.settings?.tileSize);
+  // The auto layout settles the tile size across several measuring passes, so
+  // whether a text tile actually overflows is only knowable once it is painted.
+  requestAnimationFrame(markClampedTextTiles);
   updateCacheStatus();
+}
+
+function markClampedTextTiles() {
+  elements.blocksContainer?.querySelectorAll(".block-main--text").forEach((main) => {
+    const tile = main.querySelector(".text-tile");
+    if (!tile) {
+      return;
+    }
+    const clamped = tile.scrollHeight > tile.clientHeight + 1;
+    main.classList.toggle("is-clamped", clamped);
+    if (!clamped) {
+      main.classList.remove("is-expanded");
+    }
+  });
 }
 
 function showEmptyState() {
@@ -541,8 +619,32 @@ function buildFallbackCard(block) {
 
 function buildMainContent(container, block) {
   container.innerHTML = "";
+  container.classList.remove("block-main--text", "is-clamped", "is-expanded");
   const node = buildMainNode(block);
   container.appendChild(block.arenaUrl ? wrapInArenaLink(node, block.arenaUrl) : node);
+  if (node.classList?.contains("text-tile")) {
+    container.classList.add("block-main--text");
+    // A sibling of the Are.na link, not a child: a button inside an anchor is
+    // invalid and would navigate away instead of expanding the text.
+    container.appendChild(createReadMoreButton(container));
+  }
+}
+
+function createReadMoreButton(container) {
+  const button = document.createElement("button");
+  button.className = "tile-read-more";
+  button.type = "button";
+  const sync = () => {
+    const expanded = container.classList.contains("is-expanded");
+    button.textContent = expanded ? "read less" : "read more";
+    button.setAttribute("aria-expanded", String(expanded));
+  };
+  button.addEventListener("click", () => {
+    container.classList.toggle("is-expanded");
+    sync();
+  });
+  sync();
+  return button;
 }
 
 function buildMainNode(block) {
@@ -640,20 +742,6 @@ function getCooldownRemaining() {
   return Math.max((state.cacheMeta.retryAt || 0) - Date.now(), 0);
 }
 
-function formatCacheProgress(progress) {
-  const total = progress?.channelsTotal;
-  if (!Number.isFinite(total) || total <= 0) {
-    return null;
-  }
-  return `${progress.channelsDone ?? 0}/${total}`;
-}
-
-// The button sits in a bar sized for a block count, so a long channel title has
-// to be cut the same way an error message already is.
-function truncateChannelLabel(value, max = 18) {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-
 function scheduleCooldownTick() {
   const active = getCooldownRemaining() > 0;
   if (active && !cooldownTimer) {
@@ -662,36 +750,6 @@ function scheduleCooldownTick() {
     clearInterval(cooldownTimer);
     cooldownTimer = null;
   }
-}
-
-function getCacheLedStatus() {
-  const status = state.cacheMeta?.state || CACHE_STATE.idle;
-  const timestamp = state.cacheMeta.lastUpdated || state.cache?.completedAt;
-
-  if (status === CACHE_STATE.error) {
-    return "error";
-  }
-
-  if (status === CACHE_STATE.cooldown) {
-    return "cooldown";
-  }
-
-  if (status === CACHE_STATE.working) {
-    return "working";
-  }
-
-  if (!timestamp) {
-    return "idle";
-  }
-
-  const age = Date.now() - timestamp;
-  const oneHour = 60 * 60 * 1000;
-
-  if (age < oneHour) {
-    return "fresh";
-  }
-
-  return "stale";
 }
 
 function updateCacheStatus() {
@@ -710,9 +768,15 @@ function updateCacheStatus() {
     return;
   }
 
-  const ledStatus = getCacheLedStatus();
+  const { led, label: text } = describeCacheStatus({
+    state: status,
+    progress: state.cacheMeta.progress,
+    retryAt: state.cacheMeta.retryAt,
+    lastUpdated: state.cacheMeta.lastUpdated || state.cache?.completedAt || 0,
+    blockCount: state.cache?.blockIds?.length ?? state.cacheMeta.blockCount ?? 0,
+    errorLabel: sanitizeErrorLabel(state.cacheMeta.lastError),
+  });
 
-  // Update LED indicator
   let ledSpan = button?.querySelector(".cache-led");
   if (button && !ledSpan) {
     ledSpan = document.createElement("span");
@@ -720,40 +784,10 @@ function updateCacheStatus() {
     button.insertBefore(ledSpan, label);
   }
   if (ledSpan) {
-    ledSpan.dataset.status = ledStatus;
+    ledSpan.dataset.status = led;
   }
 
-  switch (status) {
-    case CACHE_STATE.working: {
-      const progress = formatCacheProgress(state.cacheMeta.progress);
-      const channel = state.cacheMeta.progress?.currentChannel;
-      if (channel && progress) {
-        label.textContent = `Syncing ${truncateChannelLabel(channel)} · ${progress}`;
-      } else {
-        label.textContent = progress ? `Syncing · ${progress}` : "Refreshing...";
-      }
-      break;
-    }
-    case CACHE_STATE.cooldown: {
-      const progress = formatCacheProgress(state.cacheMeta.progress);
-      const synced = progress ? `Synced ${progress}` : "Rate limited";
-      label.textContent = remaining > 0
-        ? `${synced} · resuming in ${formatCountdown(remaining)}`
-        : `${synced} · resuming`;
-      break;
-    }
-    case CACHE_STATE.error:
-      label.textContent = sanitizeErrorLabel(state.cacheMeta.lastError);
-      break;
-    default: {
-      const blockCount = state.cache?.blockIds?.length ?? state.cacheMeta.blockCount ?? 0;
-      if (blockCount) {
-        label.textContent = `${blockCount} block${blockCount === 1 ? "" : "s"}`;
-      } else {
-        label.textContent = "Cache idle";
-      }
-    }
-  }
+  label.textContent = text;
   updateCacheSummaryTooltip();
 }
 
