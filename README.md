@@ -5,6 +5,18 @@
 ## Overview
 This extension replaces the browser’s default new tab with a grid of random Are.na blocks sourced from your favourite channels. Out of the box it shows one block at a time pulled from the `ephemeral-visions` and `device-gadget` channels, and it keeps your existing bookmarks accessible with a scrollable strip and nested folder menus (overflowing items sit behind a `⋯` button).
 
+## This fork
+This is a personal fork of the original extension by Leon ([lok.computer](https://lok.computer), [@lok](https://are.na/lok) on Are.na). The original lives on [GitHub](https://github.com/l3ony2k/are.na-blocks-new-tab) and in the [Chrome Web Store](https://chromewebstore.google.com/detail/arena-blocks-new-tab/igojkfooklaplhnapbafjobcamcedieo).
+
+What differs from the original:
+- Bookmarks became a full board with stacked pinned, main and archive surfaces, folder options, a trash view and a recent rail, replacing the single top strip.
+- Bookmarks show unread post counts from RSS/Atom feeds, refreshed by a background alarm.
+- The block cache lives in IndexedDB instead of a single storage key, so it is no longer capped by the storage quota.
+- Channel refreshes run incrementally, report progress and resume partial passes after an interruption.
+- Are.na requests are throttled to stay inside the observed rate limits.
+- Up to 8 blocks per new tab, and clicking a tile opens its Are.na page.
+- Settings open in a slide-over from the new tab.
+
 ## Installation
 - **Chrome Web Store:** Visit the listing for “are.na blocks new tab” and click `Add to Chrome`. The extension starts working immediately after the install prompt.
 - **Manual install (development builds):**
