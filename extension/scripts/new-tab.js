@@ -150,6 +150,7 @@ createSettingsPanel({
   openButton: elements.openSettings,
   closeButtons: Array.from(elements.settingsPanel?.querySelectorAll("[data-settings-close]") || []),
   src: "../pages/settings.html",
+  onManageBookmarks: () => bookmarksView.enterBoardManage(),
 });
 
 const renderBlockLayout = createBlockLayout({

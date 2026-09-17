@@ -113,6 +113,8 @@ const elements = {
     mainFolders: document.getElementById("main-folders"),
     resetDefaultsButton: document.getElementById("reset-defaults"),
     resetNewMarkersButton: document.getElementById("reset-new-markers"),
+    manageBoardButton: document.getElementById("manage-board"),
+    boardEditorFieldset: document.getElementById("board-editor-fieldset"),
     bookmarkTrash: document.getElementById("bookmark-trash"),
     clearTrashButton: document.getElementById("clear-trash"),
     planJson: document.getElementById("plan-json"),
@@ -316,6 +318,7 @@ function wireEvents() {
     elements.clearCacheConfirmButton?.addEventListener("click", handleClearCacheConfirm);
     elements.resetDefaultsButton?.addEventListener("click", handleResetDefaults);
     elements.resetNewMarkersButton?.addEventListener("click", handleResetNewMarkers);
+    elements.manageBoardButton?.addEventListener("click", handleManageBoard);
     elements.clearTrashButton?.addEventListener("click", handleClearTrash);
     elements.bookmarkTrash?.addEventListener("click", handleTrashClick);
     elements.bookmarkTrash?.addEventListener("change", handleTrashChange);
@@ -353,6 +356,11 @@ function wireEvents() {
     // closed and that is this page's cue to spend the held-back refresh.
     window.addEventListener("pagehide", handlePageHide);
 
+    if (elements.boardEditorFieldset) {
+        // The editor lives in the new tab, so a settings page opened on its own has
+        // no board to hand the request to.
+        elements.boardEditorFieldset.hidden = !embedded;
+    }
     if (embedded) {
         document.body.dataset.embedded = "true";
         document.addEventListener("keydown", handleEmbeddedKeyDown);
@@ -533,6 +541,11 @@ async function resolveBoardRootId() {
         }
     }
     return String(current?.id || "1");
+}
+
+function handleManageBoard(event) {
+    event.preventDefault();
+    postToPanel({ type: "manage-bookmarks" });
 }
 
 async function handleResetNewMarkers(event) {

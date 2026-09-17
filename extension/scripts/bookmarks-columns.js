@@ -1,4 +1,6 @@
 import { applyFavicon } from "./bookmark-favicon.js";
+import { createLinkDrag } from "./bookmarks-drag.js";
+import { beginLinkEdit, createButton, focusTitle, makeTitleEditable } from "./bookmarks-edit.js";
 
 export const COLUMN_SLOTS = 3;
 
@@ -51,10 +53,18 @@ export function columnDescriptor(nodes, path, depth) {
     return { type: "items", items: children, links: depth > 0 ? node.links || [] : [], selected: path[depth] || null };
 }
 
-export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
+export function createColumns({ container, breadcrumb, onOpen, onOpenAll, onManageAction }) {
     let nodes = [];
     let path = [];
     let freshFor = () => 0;
+    let manage = false;
+    let pendingRemoves = new Set();
+    const drag = createLinkDrag({
+        container,
+        rowSelector: ".bm-col-row",
+        folderSelector: ".bm-col-item, .bm-col",
+        onMove: (move) => onManageAction?.({ type: "move", ...move })
+    });
 
     function selectAt(depth, nodePath) {
         path = path.slice(0, depth);
@@ -70,6 +80,12 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
         return parent?.title || path[depth - 1]?.split("/").at(-1) || "";
     }
 
+    // Titles rather than the stored path: a folder renamed in manage mode has to read
+    // back as its new name before the rename is written to the browser.
+    function breadcrumbLabel() {
+        return path.map((segment, index) => nodeAtDepth(nodes, path, index + 1)?.title || segment.split("/").at(-1)).join(" › ");
+    }
+
     function renderLinkRow(link) {
         const row = document.createElement("a");
         row.className = "bm-col-row";
@@ -78,6 +94,8 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
         row.rel = "noopener";
         row.title = link.title;
         row.dataset.bookmarkId = link.id;
+        row.draggable = manage;
+        row.classList.toggle("is-pending-remove", pendingRemoves.has(String(link.id)));
         const favicon = document.createElement("img");
         favicon.className = "bm-favicon";
         favicon.alt = "";
@@ -87,7 +105,30 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
         const title = document.createElement("span");
         title.className = "bm-col-row-title";
         title.textContent = link.title;
+        if (manage) {
+            const grip = document.createElement("span");
+            grip.className = "bm-grip";
+            grip.textContent = "⋮⋮";
+            row.append(grip);
+        }
         row.append(favicon, title);
+        if (manage) {
+            const remove = createButton("✕", "bm-row-remove");
+            remove.title = "delete";
+            remove.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onManageAction?.({ type: "remove", link });
+            });
+            row.append(remove);
+            row.addEventListener("click", (event) => {
+                event.preventDefault();
+                if (!event.target.closest("button")) {
+                    beginLinkEdit(row, link, onManageAction);
+                }
+            });
+            return row;
+        }
         const fresh = freshFor(link);
         if (fresh) {
             row.classList.add("bm-new-row");
@@ -105,8 +146,15 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
     }
 
     function renderItem(node, depth, selected) {
-        const item = document.createElement("button");
-        item.type = "button";
+        // A rename button cannot live inside a button, so manage mode trades the
+        // native button for a focusable row that still opens on click and Enter.
+        const item = document.createElement(manage ? "div" : "button");
+        if (manage) {
+            item.tabIndex = 0;
+            item.dataset.folderId = node.id;
+        } else {
+            item.type = "button";
+        }
         item.className = "bm-col-item";
         item.classList.toggle("is-selected", node.path === selected);
         item.dataset.folderPath = node.path;
@@ -116,33 +164,78 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
         const count = document.createElement("span");
         count.className = "bm-col-item-count";
         count.textContent = `${node.count} ›`;
-        const fresh = countFresh(node, freshFor);
+        const fresh = manage ? 0 : countFresh(node, freshFor);
         if (fresh) {
             item.classList.add("has-new");
             item.append(name, createNewPill(document, `${fresh}`), count);
         } else {
             item.append(name, count);
         }
-        item.addEventListener("click", () => selectAt(depth, node.path));
+        const open = () => selectAt(depth, node.path);
+        if (manage) {
+            const rename = createButton("✎", "bm-tool bm-col-rename");
+            rename.title = "rename";
+            rename.addEventListener("click", (event) => {
+                event.stopPropagation();
+                focusTitle(makeTitleEditable(name, node, onManageAction));
+            });
+            item.append(rename);
+            item.addEventListener("click", (event) => {
+                if (!event.target.closest("button, [contenteditable='true']")) {
+                    open();
+                }
+            });
+            item.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" && event.target === item) {
+                    event.preventDefault();
+                    open();
+                }
+            });
+        } else {
+            item.addEventListener("click", open);
+        }
         return item;
     }
 
+    function renderHead(column, depth, node) {
+        const head = document.createElement("div");
+        head.className = "bm-col-head";
+        const title = document.createElement("span");
+        title.className = "bm-col-head-title";
+        title.textContent = label(depth);
+        const tools = document.createElement("span");
+        tools.className = "bm-tools";
+        head.append(title, tools);
+        column.append(head);
+        if (manage && node) {
+            makeTitleEditable(title, node, onManageAction);
+            const addFolder = createButton("＋ folder", "bm-tool bm-add-folder");
+            addFolder.addEventListener("click", () => onManageAction?.({ type: "create-folder", parent: node }));
+            tools.append(addFolder);
+        }
+        return { head, tools };
+    }
+
     function render() {
+        // Every edit re-renders the browser, so a column still showing the same folder
+        // keeps its place rather than jumping to the top after a rename or a delete.
+        const scrollTops = new Map(Array.from(container.children, (column) => [column.dataset.folderPath || "", column.scrollTop]));
         container.innerHTML = "";
         if (breadcrumb) {
-            breadcrumb.textContent = path.length ? path.at(-1).split("/").join(" › ") : "";
+            breadcrumb.textContent = breadcrumbLabel();
         }
         const start = windowStart(path);
         for (let slot = 0; slot < COLUMN_SLOTS; slot += 1) {
             const depth = start + slot;
             const column = document.createElement("div");
             column.className = "bm-col";
+            const node = depth > 0 ? nodeAtDepth(nodes, path, depth) : null;
+            if (node) {
+                column.dataset.folderId = node.id;
+                column.dataset.folderPath = node.path;
+            }
 
-            const head = document.createElement("div");
-            head.className = "bm-col-head";
-            head.textContent = label(depth);
-            column.append(head);
-
+            const { tools } = renderHead(column, depth, node);
             const descriptor = columnDescriptor(nodes, path, depth);
             if (!descriptor) {
                 // a column past the current selection stays blank rather than prompting
@@ -154,16 +247,16 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
                     empty.textContent = "empty";
                     column.append(empty);
                 } else {
-                    if (onOpenAll && descriptor.links.length > 1) {
-                        head.append(openAllButton(descriptor.links));
+                    if (onOpenAll && !manage && descriptor.links.length > 1) {
+                        tools.append(openAllButton(descriptor.links));
                     }
                     for (const link of descriptor.links) {
                         column.append(renderLinkRow(link));
                     }
                 }
             } else {
-                for (const node of descriptor.items) {
-                    column.append(renderItem(node, depth, descriptor.selected));
+                for (const child of descriptor.items) {
+                    column.append(renderItem(child, depth, descriptor.selected));
                 }
                 // a folder holding both subfolders and its own links shows them under the subfolders
                 for (const link of descriptor.links) {
@@ -171,14 +264,13 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
                 }
             }
             container.append(column);
+            column.scrollTop = scrollTops.get(column.dataset.folderPath || "") || 0;
         }
+        drag.setEnabled(manage);
     }
 
     function openAllButton(links) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "bm-tool";
-        button.textContent = "open all ↗";
+        const button = createButton("open all ↗", "bm-tool");
         button.addEventListener("click", (event) => {
             event.stopPropagation();
             onOpenAll(links);
@@ -186,8 +278,10 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
         return button;
     }
 
-    function setNodes(nextNodes, { keepPath = true, freshFor: nextFreshFor } = {}) {
+    function setNodes(nextNodes, { keepPath = true, freshFor: nextFreshFor, manage: nextManage = false, pendingRemoveIds = [] } = {}) {
         nodes = nextNodes || [];
+        manage = nextManage;
+        pendingRemoves = new Set(Array.from(pendingRemoveIds, String));
         if (typeof nextFreshFor === "function") {
             freshFor = nextFreshFor;
         }
@@ -197,5 +291,16 @@ export function createColumns({ container, breadcrumb, onOpen, onOpenAll }) {
         render();
     }
 
-    return { setNodes, render, getPath: () => path.slice() };
+    // A folder created while managing lands in the column the user pressed ＋ in,
+    // so it opens for renaming instead of leaving "new folder" to be hunted down.
+    function focusFolder(node) {
+        const name = container.querySelector(`.bm-col-item[data-folder-id="${CSS.escape(String(node.id))}"] .bm-col-item-name`);
+        if (!name) {
+            return false;
+        }
+        focusTitle(makeTitleEditable(name, node, onManageAction));
+        return true;
+    }
+
+    return { setNodes, render, focusFolder, getPath: () => path.slice() };
 }

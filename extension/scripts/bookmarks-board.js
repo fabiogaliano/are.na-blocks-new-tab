@@ -1,12 +1,6 @@
 import { applyFavicon } from "./bookmark-favicon.js";
-
-function createButton(label, className) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = className;
-    button.textContent = label;
-    return button;
-}
+import { createLinkDrag } from "./bookmarks-drag.js";
+import { beginLinkEdit, createButton, makeTitleEditable } from "./bookmarks-edit.js";
 
 function createRow(link, onOpen, { manage = false, pendingRemove = false, onManageAction } = {}) {
     const row = document.createElement("a");
@@ -63,70 +57,6 @@ function createRow(link, onOpen, { manage = false, pendingRemove = false, onMana
     return row;
 }
 
-function beginLinkEdit(row, link, onManageAction) {
-    if (row.dataset.editing === "true") {
-        return;
-    }
-    row.dataset.editing = "true";
-    const original = Array.from(row.childNodes);
-    const title = document.createElement("input");
-    title.type = "text";
-    title.value = link.title;
-    title.setAttribute("aria-label", "Bookmark title");
-    const url = document.createElement("input");
-    url.type = "text";
-    url.value = link.url;
-    url.setAttribute("aria-label", "Bookmark URL");
-    const restore = () => {
-        row.dataset.editing = "false";
-        row.replaceChildren(...original);
-    };
-    const commit = () => {
-        onManageAction?.({ type: "update-link", link, title: title.value, url: url.value });
-    };
-    for (const input of [title, url]) {
-        input.addEventListener("click", (event) => event.stopPropagation());
-        input.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-                event.preventDefault();
-                commit();
-            } else if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                restore();
-            }
-        });
-    }
-    row.replaceChildren(title, url);
-    title.focus();
-    title.select();
-}
-
-function makeTitleEditable(header, entity, onManageAction) {
-    const title = header.firstElementChild;
-    const original = title.textContent;
-    title.contentEditable = "true";
-    title.spellcheck = false;
-    title.dataset.editId = entity.id;
-    title.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-            event.preventDefault();
-            title.blur();
-        } else if (event.key === "Escape") {
-            event.preventDefault();
-            event.stopPropagation();
-            title.textContent = original;
-            title.blur();
-        }
-    });
-    title.addEventListener("blur", () => {
-        const next = title.textContent.trim();
-        if (next && next !== original) {
-            onManageAction?.({ type: "rename-folder", folder: entity, title: next });
-        }
-    });
-}
-
 function createHeader(className, title, count, tools) {
     const header = document.createElement("header");
     header.className = className;
@@ -147,6 +77,13 @@ export function createBoard({ container, onOpen, onOpenAll, onManageAction } = {
     let model = null;
     let currentNewIds = new Set();
     let currentSelection = new Set();
+    const drag = createLinkDrag({
+        container,
+        rowSelector: ".bm-row",
+        folderSelector: ".bm-group, .bm-card",
+        rowsSelector: ":scope > .bm-rows",
+        onMove: (move) => onManageAction?.({ type: "move", ...move })
+    });
 
     function renderEmpty(nextModel) {
         const empty = document.createElement("div");
@@ -202,7 +139,7 @@ export function createBoard({ container, onOpen, onOpenAll, onManageAction } = {
             }
             const cardHead = createHeader("bm-card-head", card.title, card.count, cardTools.childElementCount ? cardTools : null);
             if (manage && !card.isRoot) {
-                makeTitleEditable(cardHead, card, onManageAction);
+                makeTitleEditable(cardHead.firstElementChild, card, onManageAction);
             }
             section.append(cardHead);
             const cardLinks = card.links.concat(card.groups.flatMap((group) => group.links));
@@ -250,7 +187,7 @@ export function createBoard({ container, onOpen, onOpenAll, onManageAction } = {
                 }
                 const groupHead = createHeader("bm-group-head", group.title, group.count, groupTools.childElementCount ? groupTools : null);
                 if (manage) {
-                    makeTitleEditable(groupHead, group, onManageAction);
+                    makeTitleEditable(groupHead.firstElementChild, group, onManageAction);
                 }
                 groupElement.append(groupHead);
                 const rows = document.createElement("div");
@@ -266,52 +203,9 @@ export function createBoard({ container, onOpen, onOpenAll, onManageAction } = {
             fragment.append(section);
         }
         container.append(fragment);
-        wireDrag(manage);
+        drag.setEnabled(manage);
         setSelection(currentSelection);
         container.scrollTop = scrollTop;
-    }
-
-    function wireDrag(manage) {
-        let draggedId = null;
-        const clearInsertion = () => container.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target"));
-        container.ondragstart = manage ? (event) => {
-            const row = event.target.closest(".bm-row");
-            if (!row) {
-                return;
-            }
-            draggedId = row.dataset.bookmarkId;
-            row.classList.add("is-dragging");
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("text/plain", draggedId);
-        } : null;
-        container.ondragover = manage ? (event) => {
-            const target = event.target.closest(".bm-row, .bm-group, .bm-card");
-            if (!target) {
-                return;
-            }
-            event.preventDefault();
-            clearInsertion();
-            target.classList.add("is-drop-target");
-        } : null;
-        container.ondrop = manage ? (event) => {
-            event.preventDefault();
-            const targetRow = event.target.closest(".bm-row");
-            const targetFolder = event.target.closest(".bm-group, .bm-card");
-            if (!draggedId || !targetFolder || targetRow?.dataset.bookmarkId === draggedId) {
-                clearInsertion();
-                return;
-            }
-            const rows = targetRow?.parentElement || targetFolder.querySelector(":scope > .bm-rows");
-            const candidates = Array.from(rows?.querySelectorAll(":scope > .bm-row") || []).filter((row) => row.dataset.bookmarkId !== draggedId);
-            const index = targetRow ? Math.max(0, candidates.indexOf(targetRow)) : candidates.length;
-            onManageAction?.({ type: "move", id: draggedId, parentId: targetFolder.dataset.folderId, path: targetFolder.dataset.folderPath, index });
-            clearInsertion();
-        } : null;
-        container.ondragend = manage ? () => {
-            draggedId = null;
-            clearInsertion();
-            container.querySelectorAll(".is-dragging").forEach((row) => row.classList.remove("is-dragging"));
-        } : null;
     }
 
     function setSelection(ids) {

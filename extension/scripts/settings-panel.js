@@ -4,7 +4,7 @@ export const SETTINGS_PANEL_CHANNEL = "arena-settings-panel";
  * Hosts the settings page in a slide-over instead of a tab so the blocks the
  * user was looking at stay on screen and survive the visit.
  */
-export function createSettingsPanel({ root, frame, openButton, closeButtons = [], src }) {
+export function createSettingsPanel({ root, frame, openButton, closeButtons = [], src, onManageBookmarks }) {
     if (!root || !frame) {
         return { open() {}, close() {}, isOpen: () => false };
     }
@@ -52,8 +52,15 @@ export function createSettingsPanel({ root, frame, openButton, closeButtons = []
         if (event.origin !== window.location.origin || event.source !== frame.contentWindow) {
             return;
         }
-        if (event.data?.channel === SETTINGS_PANEL_CHANNEL && event.data.type === "close-requested") {
+        if (event.data?.channel !== SETTINGS_PANEL_CHANNEL) {
+            return;
+        }
+        if (event.data.type === "close-requested") {
             close();
+        } else if (event.data.type === "manage-bookmarks") {
+            // The editor it asks for lives out here, so the panel gets out of its way.
+            close();
+            onManageBookmarks?.();
         }
     }
 

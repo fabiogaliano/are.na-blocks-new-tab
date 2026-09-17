@@ -13,6 +13,16 @@ import { deleteNodes, restoreEntry } from "./bookmarks-trash.js";
 import { createMarquee, pruneSelection, toggle } from "./bookmarks-select.js";
 import { createPalette } from "./bookmarks-palette.js";
 import { applyQueue, describeQueue, queueOp, reduceQueue } from "./bookmarks-manage.js";
+import { createLinkDrag } from "./bookmarks-drag.js";
+import { beginLinkEdit, createButton, focusTitle, makeTitleEditable } from "./bookmarks-edit.js";
+import {
+    createSurfaceFolder,
+    findSurfaceLink,
+    findSurfaceNode,
+    insertSurfaceLink,
+    recountSurfaces,
+    removeSurfaceLink
+} from "./bookmarks-surface-manage.js";
 
 const LAUNCH_CHIP_CLEARANCE = 16;
 
@@ -38,9 +48,10 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     let statusDeadline = 0;
     let statusActive = false;
     let lastTrashEntry = null;
-    let managing = false;
+    let manageMode = null;
     let manageQueue = [];
     let manageModel = null;
+    let manageSurfaces = null;
     let nextTempId = 1;
     const document = root.ownerDocument;
     const toBlocks = document.getElementById("view-blocks");
@@ -72,12 +83,18 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     const mainCrumb = document.getElementById("bm-main-crumb");
     const archiveCrumb = document.getElementById("bm-archive-crumb");
     const mainColumns = mainColumnsEl
-        ? createColumns({ container: mainColumnsEl, breadcrumb: mainCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll })
+        ? createColumns({ container: mainColumnsEl, breadcrumb: mainCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll, onManageAction: handleSurfaceAction })
         : null;
     const archiveColumns = archiveColumnsEl
-        ? createColumns({ container: archiveColumnsEl, breadcrumb: archiveCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll })
+        ? createColumns({ container: archiveColumnsEl, breadcrumb: archiveCrumb, onOpen: handleOpen, onOpenAll: handleOpenAll, onManageAction: handleSurfaceAction })
         : null;
     const board = createBoard({ container: boardContainer, onOpen: handleOpen, onOpenAll: handleOpenAll, onManageAction: handleManageAction });
+    const pinnedDrag = pinnedContainer ? createLinkDrag({
+        container: pinnedContainer,
+        rowSelector: ".bm-pinned-row",
+        folderSelector: ".bm-pinned-rows",
+        onMove: (move) => handleSurfaceAction({ type: "move", ...move })
+    }) : null;
     const marquee = createMarquee({
         board: boardContainer,
         getRects: board.getRects,
@@ -253,6 +270,13 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         updateManageNote();
     }
 
+    function renderManageSurfaces() {
+        renderPinned(manageSurfaces, true);
+        mainColumns?.setNodes(manageSurfaces.main, { manage: true, pendingRemoveIds: pendingRemoveIds() });
+        archiveColumns?.setNodes(manageSurfaces.archive, { manage: true, pendingRemoveIds: pendingRemoveIds() });
+        updateManageNote();
+    }
+
     function findManageFolder(id) {
         if (String(id) === String(manageModel.rootId)) {
             return manageModel.cards.find((card) => card.isRoot) || { id: manageModel.rootId, path: "", links: [] };
@@ -300,7 +324,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
     }
 
     function handleManageAction(action) {
-        if (!managing || !manageModel) {
+        if (manageMode !== "board" || !manageModel) {
             return;
         }
         if (action.type === "remove") {
@@ -344,39 +368,114 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         renderManageModel();
     }
 
-    function setManageUi(active) {
-        managing = active;
-        document.body.dataset.manage = active ? "true" : "false";
-        manageNote.hidden = !active;
-        addRootFolderButton.hidden = !active;
-        manageButton.disabled = active;
-        searchButton.disabled = active;
-        marquee.setEnabled(!active);
+    function setManageUi(mode) {
+        manageMode = mode;
+        document.body.dataset.manage = mode ? "true" : "false";
+        manageNote.hidden = !mode;
+        // The board edits one flat list with no folder of its own to add to, so its
+        // root button lives in the bar; the columns add folders from their own heads.
+        addRootFolderButton.hidden = mode !== "board";
+        manageButton.disabled = Boolean(mode);
+        searchButton.disabled = Boolean(mode);
+        marquee.setEnabled(!mode);
+        pinnedDrag?.setEnabled(mode === "surface");
     }
 
     function handleAddRootFolder() {
         createManagedFolder(null);
     }
 
-    async function enterManage() {
+    function createSurfaceManageFolder(parent) {
+        if (!parent) {
+            return;
+        }
+        const tempId = `temp-${nextTempId++}`;
+        const title = "new folder";
+        manageQueue = queueOp(manageQueue, { op: "create", tempId, parentId: String(parent.id), title });
+        const folder = createSurfaceFolder(parent, { id: tempId, title });
+        recountSurfaces(manageSurfaces);
+        renderManageSurfaces();
+        // A folder added from a pinned block has no column of its own to open in.
+        requestAnimationFrame(() => {
+            if (!mainColumns?.focusFolder(folder)) {
+                archiveColumns?.focusFolder(folder);
+            }
+        });
+    }
+
+    function handleSurfaceAction(action) {
+        if (manageMode !== "surface" || !manageSurfaces) {
+            return;
+        }
+        if (action.type === "remove") {
+            if (!pendingRemoveIds().includes(action.link.id)) {
+                manageQueue = queueOp(manageQueue, { op: "remove", id: action.link.id });
+            }
+        } else if (action.type === "update-link") {
+            const found = findSurfaceLink(manageSurfaces, action.link.id);
+            if (found) {
+                found.link.title = action.title;
+                found.link.url = action.url;
+                manageQueue = queueOp(manageQueue, { op: "update", id: found.link.id, title: action.title, url: action.url });
+            }
+        } else if (action.type === "rename-folder") {
+            const node = findSurfaceNode(manageSurfaces, action.folder.id);
+            if (node) {
+                node.title = action.title;
+                manageQueue = queueOp(manageQueue, { op: "update", id: node.id, title: action.title });
+            }
+        } else if (action.type === "create-folder") {
+            createSurfaceManageFolder(findSurfaceNode(manageSurfaces, action.parent.id));
+            return;
+        } else if (action.type === "move") {
+            const found = findSurfaceLink(manageSurfaces, action.id);
+            const destination = findSurfaceNode(manageSurfaces, action.parentId);
+            if (found && destination) {
+                removeSurfaceLink(manageSurfaces, action.id);
+                const index = insertSurfaceLink(destination, found.link, action.index);
+                manageQueue = queueOp(manageQueue, { op: "move", id: found.link.id, parentId: String(destination.id), index });
+                recountSurfaces(manageSurfaces);
+            }
+        }
+        renderManageSurfaces();
+    }
+
+    async function beginManage() {
         await show();
         palette.close();
         clearSelection();
         manageQueue = [];
-        manageModel = structuredClone(model);
         if (manageErrors) {
             manageErrors.hidden = true;
             manageErrors.textContent = "";
         }
-        setManageUi(true);
+    }
+
+    // The board editor: every folder under the root at once, reached from settings
+    // when you want to rearrange the whole tree rather than the view in front of you.
+    async function enterBoardManage() {
+        await beginManage();
+        manageModel = structuredClone(model);
+        setManageUi("board");
         setLayout(true);
         renderManageModel();
+    }
+
+    // The same queued edits against the surface you are already reading. Cloning the
+    // whole surfaces object in one call keeps a folder that is both pinned and
+    // browsable a single object, so an edit there shows up in both places.
+    async function enterSurfaceManage() {
+        await beginManage();
+        manageSurfaces = recountSurfaces(structuredClone(surfaces));
+        setManageUi("surface");
+        renderManageSurfaces();
     }
 
     async function cancelManage() {
         manageQueue = [];
         manageModel = null;
-        setManageUi(false);
+        manageSurfaces = null;
+        setManageUi(null);
         setLayout(false);
         if (stale) {
             await refresh();
@@ -412,7 +511,9 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         const applied = result.applied;
         manageQueue = [];
         manageModel = null;
-        setManageUi(false);
+        manageSurfaces = null;
+        setManageUi(null);
+        setLayout(false);
         pendingRefresh = false;
         ignoreEventsUntil = Date.now() + BOOKMARK_REFRESH_DEBOUNCE;
         await refresh();
@@ -580,51 +681,83 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         boardContainer.hidden = !manageLayout;
     }
 
-    function renderPinned() {
+    function renderPinned(source = surfaces, manage = false) {
         if (!pinnedContainer) {
             return;
         }
+        const pendingRemoves = new Set(manage ? pendingRemoveIds().map(String) : []);
         pinnedContainer.innerHTML = "";
-        for (const node of surfaces.pinned) {
-            const heading = document.createElement("h2");
-            heading.className = "bm-section-title";
-            heading.textContent = node.path.split("/").join(" — ");
+        for (const node of source.pinned) {
             const block = document.createElement("div");
             block.className = "bm-pinned-block";
             // Subfolders are the grouping: a pinned folder split into "communities",
             // "startups" and so on reads as labelled columns instead of one long list.
             if (node.children.length) {
                 block.classList.add("is-grouped");
+                // The folder's own links would otherwise vanish behind its subfolders;
+                // while managing the group is kept even when empty, as a drop target.
+                if (node.links.length || manage) {
+                    // Its own links, not a subfolder: the heading above already renames it.
+                    block.append(createPinnedGroup(node, manage, pendingRemoves, { editable: false }));
+                }
                 for (const group of node.children) {
-                    block.append(createPinnedGroup(group.title, group.links));
+                    block.append(createPinnedGroup(group, manage, pendingRemoves));
                 }
             } else {
-                block.append(createPinnedRows(node.links));
+                block.append(createPinnedRows(node, manage, pendingRemoves));
             }
-            pinnedContainer.append(heading, block);
+            pinnedContainer.append(createPinnedHeading(node, manage), block);
         }
     }
 
-    function createPinnedRows(links) {
+    function createPinnedHeading(node, manage) {
+        const heading = document.createElement("h2");
+        heading.className = "bm-section-title";
+        const segments = node.path.split("/");
+        const title = document.createElement("span");
+        title.className = "bm-pinned-title";
+        title.textContent = manage ? node.title : segments.join(" — ");
+        if (segments.length > 1 && manage) {
+            heading.append(`${segments.slice(0, -1).join(" — ")} — `);
+        }
+        heading.append(title);
+        if (manage) {
+            makeTitleEditable(title, node, handleSurfaceAction);
+            const tools = document.createElement("span");
+            tools.className = "bm-tools";
+            const addFolder = createButton("＋ folder", "bm-tool bm-add-folder");
+            addFolder.addEventListener("click", () => handleSurfaceAction({ type: "create-folder", parent: node }));
+            tools.append(addFolder);
+            heading.append(tools);
+        }
+        return heading;
+    }
+
+    function createPinnedRows(node, manage, pendingRemoves) {
         const rows = document.createElement("div");
         rows.className = "bm-pinned-rows";
-        for (const link of links) {
-            rows.append(createPinnedRow(link));
+        rows.dataset.folderId = node.id;
+        rows.dataset.folderPath = node.path;
+        for (const link of node.links) {
+            rows.append(createPinnedRow(link, manage, pendingRemoves));
         }
         return rows;
     }
 
-    function createPinnedGroup(title, links) {
+    function createPinnedGroup(node, manage, pendingRemoves, { editable = true } = {}) {
         const group = document.createElement("div");
         group.className = "bm-pinned-group";
         const label = document.createElement("div");
         label.className = "bm-group-label";
-        label.textContent = title;
-        group.append(label, createPinnedRows(links));
+        label.textContent = node.title;
+        if (manage && editable) {
+            makeTitleEditable(label, node, handleSurfaceAction);
+        }
+        group.append(label, createPinnedRows(node, manage, pendingRemoves));
         return group;
     }
 
-    function createPinnedRow(link) {
+    function createPinnedRow(link, manage, pendingRemoves) {
         const row = document.createElement("a");
         row.className = "bm-row bm-pinned-row";
         row.href = link.url;
@@ -632,7 +765,8 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         row.rel = "noopener";
         row.title = link.title;
         row.dataset.bookmarkId = link.id;
-        const fresh = freshFor(link);
+        row.draggable = manage;
+        const fresh = manage ? 0 : freshFor(link);
         row.classList.toggle("bm-new-row", Boolean(fresh));
         const favicon = document.createElement("img");
         favicon.className = "bm-favicon";
@@ -643,7 +777,31 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         const title = document.createElement("span");
         title.className = "bm-row-title";
         title.textContent = link.title;
+        if (manage) {
+            const grip = document.createElement("span");
+            grip.className = "bm-grip";
+            grip.textContent = "⋮⋮";
+            row.append(grip);
+        }
         row.append(favicon, title);
+        if (manage) {
+            row.classList.toggle("is-pending-remove", pendingRemoves.has(String(link.id)));
+            const remove = createButton("✕", "bm-row-remove");
+            remove.title = "delete";
+            remove.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                handleSurfaceAction({ type: "remove", link });
+            });
+            row.append(remove);
+            row.addEventListener("click", (event) => {
+                event.preventDefault();
+                if (!event.target.closest("button")) {
+                    beginLinkEdit(row, link, handleSurfaceAction);
+                }
+            });
+            return row;
+        }
         if (fresh) {
             row.append(createNewPill(document, `${fresh}`));
         }
@@ -658,8 +816,10 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
 
     function renderModel() {
         const startedAt = performance.now();
-        if (managing && manageModel) {
+        if (manageMode === "board" && manageModel) {
             board.render(manageModel, [], { manage: true, pendingRemoveIds: pendingRemoveIds() });
+        } else if (manageMode === "surface" && manageSurfaces) {
+            renderManageSurfaces();
         } else {
             renderPinned();
             mainColumns?.setNodes(surfaces.main, { freshFor });
@@ -710,7 +870,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
 
     function scheduleRefresh() {
         stale = true;
-        if (suppressEvents || managing) {
+        if (suppressEvents || manageMode) {
             pendingRefresh = true;
             return;
         }
@@ -754,7 +914,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
             return;
         }
         if (event.key === "Escape") {
-            if (managing) {
+            if (manageMode) {
                 const count = reduceQueue(manageQueue).length;
                 if (!count || window.confirm(`Discard ${count} changes?`)) {
                     cancelManage();
@@ -765,7 +925,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
             return;
         }
         const typing = event.target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName || "");
-        if (event.key === "/" && !managing && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (event.key === "/" && !manageMode && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
             event.preventDefault();
             openSearchPalette();
             return;
@@ -797,7 +957,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         deleteSelectionButton?.addEventListener("click", deleteSelected);
         clearSelectionButton?.addEventListener("click", clearSelection);
         searchButton?.addEventListener("click", openSearchPalette);
-        manageButton?.addEventListener("click", enterManage);
+        manageButton?.addEventListener("click", enterSurfaceManage);
         addRootFolderButton?.addEventListener("click", handleAddRootFolder);
         manageCancelButton?.addEventListener("click", cancelManage);
         manageDoneButton?.addEventListener("click", finishManage);
@@ -867,7 +1027,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         deleteSelectionButton?.removeEventListener("click", deleteSelected);
         clearSelectionButton?.removeEventListener("click", clearSelection);
         searchButton?.removeEventListener("click", openSearchPalette);
-        manageButton?.removeEventListener("click", enterManage);
+        manageButton?.removeEventListener("click", enterSurfaceManage);
         addRootFolderButton?.removeEventListener("click", handleAddRootFolder);
         manageCancelButton?.removeEventListener("click", cancelManage);
         manageDoneButton?.removeEventListener("click", finishManage);
@@ -893,6 +1053,7 @@ export function createBookmarksView({ root, blocksView, boardContainer, strip, s
         getNewCount: () => bookmarkState.newIds.length,
         updateSettings,
         refresh,
+        enterBoardManage,
         destroy,
         getModel: () => model
     };
