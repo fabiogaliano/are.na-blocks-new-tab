@@ -95,15 +95,24 @@ describe("bucketRecent", () => {
 });
 
 describe("groupRecent", () => {
-    it("keeps newest-first order and groups neighbours", () => {
+    it("keeps newest-first order and makes one group per tab draw", () => {
         const groups = groupRecent([
             { id: "1", at: NOW - 10 * 1000 },
             { id: "2", at: NOW - 30 * MINUTE },
-            { id: "3", at: NOW - 40 * MINUTE },
-            { id: "4", at: NOW - 6 * HOUR }
+            { id: "3", at: NOW - 30 * MINUTE },
+            { id: "4", at: NOW - 40 * MINUTE },
+            { id: "5", at: NOW - 6 * HOUR }
         ], NOW);
-        expect(groups.map((group) => group.label)).toEqual(["just now", "last hour", "earlier today"]);
-        expect(groups[1].entries.map((entry) => entry.id)).toEqual(["2", "3"]);
+        expect(groups.map((group) => group.label))
+            .toEqual(["just now", "last hour", "last hour", "earlier today"]);
+        expect(groups.map((group) => group.entries.map((entry) => entry.id)))
+            .toEqual([["1"], ["2", "3"], ["4"], ["5"]]);
+    });
+
+    it("carries the draw time, so a group can be told from its neighbours", () => {
+        const groups = groupRecent([{ id: "1", at: NOW }, { id: "2", at: NOW }], NOW);
+        expect(groups).toHaveLength(1);
+        expect(groups[0].at).toBe(NOW);
     });
 });
 

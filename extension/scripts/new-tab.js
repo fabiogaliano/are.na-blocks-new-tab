@@ -166,7 +166,7 @@ const recentRail = createRecentRail({
   toggleButton: elements.recentButton,
   closeButton: elements.recentRailClose,
   emptyElement: elements.recentRailEmpty,
-  onRestore: restoreBlock,
+  onRestore: restoreBlocks,
   // The rail belongs to the blocks view; the bookmarks view has its own
   // keyboard surface and would have nothing to put the block back onto.
   canOpen: () => document.body.dataset.view !== "bookmarks",
@@ -252,13 +252,15 @@ async function renderAll() {
   updateCacheStatus();
 }
 
-// Shift-clicking a thumbnail puts that block back on the tab it fell off.
-function restoreBlock(block) {
-  if (!block) {
+// A group in the rail is one tab's worth of blocks, so bringing it back lays out
+// the whole panel again rather than a single block.
+function restoreBlocks(blocks) {
+  const restored = (blocks || []).filter(Boolean);
+  if (!restored.length) {
     return;
   }
-  state.currentBlocks = [block];
-  renderLayout([block]);
+  state.currentBlocks = restored;
+  renderLayout(restored);
 }
 
 function toggleRegions() {

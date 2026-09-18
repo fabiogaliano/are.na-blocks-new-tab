@@ -87,12 +87,14 @@ export function createRecentRail({
 
         track.replaceChildren();
         const now = Date.now();
+        let lastLabel = "";
         for (const group of groupRecent(entries, now)) {
             const resolved = group.entries.filter((entry) => byId.has(entry.id));
             if (!resolved.length) {
                 continue;
             }
-            track.appendChild(renderGroup(group.label, resolved, byId, now));
+            track.appendChild(renderGroup(group.label, group.label === lastLabel, resolved, byId, now));
+            lastLabel = group.label;
         }
         const empty = !track.childElementCount;
         if (emptyElement) {
@@ -101,16 +103,39 @@ export function createRecentRail({
         track.hidden = empty;
     }
 
-    function renderGroup(label, groupEntries, byId, now) {
+    function renderGroup(label, repeatsLabel, groupEntries, byId, now) {
         const section = document.createElement("section");
         section.className = "recent-group";
         const heading = document.createElement("h2");
         heading.className = "recent-group-label";
+        // Kept in the flow when it repeats the group before it, so every row of
+        // thumbnails still starts at the same height.
+        heading.classList.toggle("is-repeat", Boolean(repeatsLabel));
         heading.textContent = label;
+        if (repeatsLabel) {
+            heading.setAttribute("aria-hidden", "true");
+        }
+
         const row = document.createElement("div");
         row.className = "recent-group-row";
-        groupEntries.forEach((entry) => row.appendChild(renderThumb(byId.get(entry.id), entry.at, now)));
-        section.append(heading, row);
+        const blocks = groupEntries.map((entry) => byId.get(entry.id));
+        groupEntries.forEach((entry, index) => row.appendChild(renderThumb(blocks[index], entry.at, now)));
+
+        const restoreButton = document.createElement("button");
+        restoreButton.type = "button";
+        restoreButton.className = "recent-group-restore";
+        restoreButton.textContent = "bring back";
+        restoreButton.setAttribute(
+            "aria-label",
+            `Bring these ${blocks.length === 1 ? "block" : `${blocks.length} blocks`} back to the tab`
+        );
+        restoreButton.addEventListener("click", () => restore(blocks));
+
+        const head = document.createElement("div");
+        head.className = "recent-group-head";
+        head.append(heading, restoreButton);
+
+        section.append(head, row);
         return section;
     }
 
@@ -145,20 +170,14 @@ export function createRecentRail({
         caption.textContent = label;
         thumb.appendChild(caption);
 
-        thumb.addEventListener("click", (event) => {
-            if (!event.shiftKey) {
-                return;
-            }
-            // Shift is the "put it back on the tab" gesture; without this the
-            // anchor would navigate to Are.na instead.
-            event.preventDefault();
-            restore(block);
-        });
         return thumb;
     }
 
-    function restore(block) {
-        onRestore?.(block);
+    function restore(blocks) {
+        if (!blocks?.length) {
+            return;
+        }
+        onRestore?.(blocks);
         close();
     }
 
@@ -216,14 +235,6 @@ export function createRecentRail({
         if (open && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
             event.preventDefault();
             moveFocus(event.key === "ArrowRight" ? 1 : -1);
-            return;
-        }
-        if (open && event.key === "Enter" && event.shiftKey) {
-            const blockId = document.activeElement?.dataset?.blockId;
-            if (blockId) {
-                event.preventDefault();
-                getBlocks([blockId]).then(([block]) => block && restore(block));
-            }
             return;
         }
         if (event.shiftKey || isTyping(event.target) || event.key.toLowerCase() !== "h") {

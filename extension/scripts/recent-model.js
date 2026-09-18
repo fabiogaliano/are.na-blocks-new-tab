@@ -77,17 +77,18 @@ export const bucketRecent = (timestamp, now = Date.now()) => {
     return "older";
 };
 
-// Groups stay in the order the entries arrive, so the rail reads newest first
-// left to right without sorting the buckets separately.
+// One group per tab draw: recordRecent stamps every block a tab showed with the
+// same time, so neighbours sharing a timestamp are the panel that tab drew and
+// can be put back together. Order is left untouched, so the rail reads newest
+// first.
 export const groupRecent = (entries, now = Date.now()) => {
     const groups = [];
     for (const entry of normalizeRecent(entries)) {
-        const label = bucketRecent(entry.at, now);
         const last = groups[groups.length - 1];
-        if (last?.label === label) {
+        if (last && last.at === entry.at) {
             last.entries.push(entry);
         } else {
-            groups.push({ label, entries: [entry] });
+            groups.push({ at: entry.at, label: bucketRecent(entry.at, now), entries: [entry] });
         }
     }
     return groups;
