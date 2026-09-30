@@ -55,6 +55,13 @@ export const pruneRecent = (entries, availableIds) => {
     return normalizeRecent(entries).filter((entry) => keep.has(entry.id));
 };
 
+// The blocks on screen are what the user is looking at, not something to go
+// back to, so the rail leaves them out until another draw replaces them.
+export const withoutShown = (entries, shownIds) => {
+    const shown = new Set([...(shownIds || [])].map(asId));
+    return normalizeRecent(entries).filter((entry) => !shown.has(entry.id));
+};
+
 export const bucketRecent = (timestamp, now = Date.now()) => {
     const at = Number(timestamp);
     if (!Number.isFinite(at) || at <= 0) {

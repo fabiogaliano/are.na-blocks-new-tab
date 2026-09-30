@@ -170,6 +170,7 @@ const recentRail = createRecentRail({
   // The rail belongs to the blocks view; the bookmarks view has its own
   // keyboard surface and would have nothing to put the block back onto.
   canOpen: () => document.body.dataset.view !== "bookmarks",
+  shownIds: () => state.currentBlocks.map((block) => block.id),
 });
 
 const bookmarksView = createBookmarksView({
@@ -261,6 +262,9 @@ function restoreBlocks(blocks) {
   }
   state.currentBlocks = restored;
   renderLayout(restored);
+  // The panel just put away goes back into the rail and the restored one leaves
+  // it, so the count changes without anything being written to storage.
+  recentRail.refresh();
 }
 
 function toggleRegions() {

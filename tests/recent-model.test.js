@@ -7,7 +7,8 @@ import {
     groupRecent,
     normalizeRecent,
     pruneRecent,
-    recordRecent
+    recordRecent,
+    withoutShown
 } from "../extension/scripts/recent-model.js";
 
 const NOW = new Date(2026, 8, 15, 12, 0, 0).getTime();
@@ -73,6 +74,19 @@ describe("pruneRecent", () => {
     it("keeps only ids the block store still holds", () => {
         const entries = [{ id: "1", at: NOW }, { id: "2", at: NOW }, { id: "3", at: NOW }];
         expect(pruneRecent(entries, ["3", "1"]).map((entry) => entry.id)).toEqual(["1", "3"]);
+    });
+});
+
+describe("withoutShown", () => {
+    it("leaves out the blocks on screen and keeps the rest in order", () => {
+        const entries = [{ id: "1", at: NOW }, { id: "2", at: NOW }, { id: "3", at: NOW - HOUR }];
+        expect(withoutShown(entries, [1, "2"]).map((entry) => entry.id)).toEqual(["3"]);
+    });
+
+    it("keeps everything when nothing is on screen", () => {
+        const entries = [{ id: "1", at: NOW }];
+        expect(withoutShown(entries, [])).toEqual(entries);
+        expect(withoutShown(entries, undefined)).toEqual(entries);
     });
 });
 

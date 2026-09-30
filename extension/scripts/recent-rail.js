@@ -2,7 +2,7 @@ import { storage } from "./extension-api.js";
 import { STORAGE_KEYS } from "./constants.js";
 import { getBlocks } from "./block-store.js";
 import { getRecentEntries, saveRecentEntries } from "./recent-store.js";
-import { groupRecent, pruneRecent } from "./recent-model.js";
+import { groupRecent, pruneRecent, withoutShown } from "./recent-model.js";
 import { formatRelativeTime } from "./time.js";
 
 const TEXT_PREVIEW_LENGTH = 120;
@@ -32,7 +32,8 @@ export function createRecentRail({
     closeButton,
     emptyElement,
     onRestore,
-    canOpen = () => true
+    canOpen = () => true,
+    shownIds = () => []
 }) {
     const document = root?.ownerDocument ?? globalThis.document;
     const counters = countElements.filter(Boolean);
@@ -40,6 +41,8 @@ export function createRecentRail({
     let open = false;
     let entries = [];
     let renderToken = 0;
+
+    const visibleEntries = () => withoutShown(entries, shownIds());
 
     function setCount(value) {
         counters.forEach((element) => {
@@ -50,7 +53,7 @@ export function createRecentRail({
 
     async function refresh({ rerender = open } = {}) {
         entries = await getRecentEntries();
-        setCount(entries.length);
+        setCount(visibleEntries().length);
         if (rerender) {
             await render();
         }
@@ -80,7 +83,7 @@ export function createRecentRail({
             const pruned = pruneRecent(entries, byId.keys());
             if (pruned.length !== entries.length) {
                 entries = pruned;
-                setCount(entries.length);
+                setCount(visibleEntries().length);
                 saveRecentEntries(entries).catch((error) => console.warn("Could not prune recently seen blocks", error));
             }
         }
@@ -88,7 +91,7 @@ export function createRecentRail({
         track.replaceChildren();
         const now = Date.now();
         let lastLabel = "";
-        for (const group of groupRecent(entries, now)) {
+        for (const group of groupRecent(visibleEntries(), now)) {
             const resolved = group.entries.filter((entry) => byId.has(entry.id));
             if (!resolved.length) {
                 continue;
