@@ -16,6 +16,7 @@ import { createSettingsPanel } from "./settings-panel.js";
 import { createRecentRail } from "./recent-rail.js";
 import { getRecentEntries, recordShownBlocks } from "./recent-store.js";
 import { softAvoidIds } from "./recent-model.js";
+import { readTabBlockIds, saveTabBlockIds } from "./tab-blocks.js";
 
 const RESIZE_DEBOUNCE = 150;
 const COOLDOWN_TICK_MS = 1000;
@@ -261,6 +262,7 @@ function restoreBlocks(blocks) {
     return;
   }
   state.currentBlocks = restored;
+  saveTabBlockIds(restored.map((block) => block.id));
   renderLayout(restored);
   // The panel just put away goes back into the rail and the restored one leaves
   // it, so the count changes without anything being written to storage.
@@ -416,6 +418,16 @@ async function renderBlocks() {
     return;
   }
 
+  // Already counted in the recent list when first drawn, so it is not recorded
+  // again. Falls through to a fresh pick if a refresh dropped every saved block.
+  const tabBlocks = await getBlocks(readTabBlockIds()).catch(() => []);
+  if (tabBlocks.length) {
+    state.currentBlocks = tabBlocks;
+    state.cacheMeta.blockCount = state.cache.blockIds.length;
+    renderLayout(tabBlocks);
+    return;
+  }
+
   const blockCount = Math.max(1, Number(state.settings?.blockCount) || 1);
   // Softly avoid what recent tabs already showed. The chooser treats this as a
   // ranking, not a filter, so a small cache still fills the tab.
@@ -445,6 +457,7 @@ async function renderBlocks() {
 
   state.currentBlocks = blocks;
   state.cacheMeta.blockCount = state.cache?.blockIds?.length ?? blocks.length;
+  saveTabBlockIds(blocks.map((block) => block.id));
   // Not awaited: the tab should paint before the ring buffer is written, and a
   // storage failure here must not cost the user the blocks they just drew.
   recordShownBlocks(blocks.map((block) => block.id))
