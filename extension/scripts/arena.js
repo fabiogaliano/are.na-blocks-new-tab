@@ -249,45 +249,50 @@ export const getChannelStamp = (channel) => {
     };
 };
 
-// The channel arrives already fetched, either on its own or from an account
-// listing, because the caller needs it to decide whether to download at all.
-export const fetchChannelBlocks = async (slug, channel, { signal, onProgress, token } = {}) => {
-    const firstPage = await fetchArenaChannelContentsPage(slug, { page: 1, per: PER_PAGE, sort: "position_asc", signal, token });
+const pageRange = (first, last) => Array.from({ length: Math.max(last - first + 1, 0) }, (_, index) => first + index);
 
-    const totalPages = Math.min(firstPage?.meta?.total_pages || 1, MAX_PAGES);
-    const orderedPages = [{ page: 1, payload: firstPage }];
+const pagesSpanning = (from, to) => pageRange(Math.ceil(from / PER_PAGE), Math.ceil(to / PER_PAGE));
 
-    for (let start = 2; start <= totalPages; start += REQUEST_BATCH) {
-        const batch = [];
-        for (let page = start; page < start + REQUEST_BATCH && page <= totalPages; page += 1) {
-            batch.push(
-                fetchArenaChannelContentsPage(slug, { page, per: PER_PAGE, sort: "position_asc", signal, token })
-                    .then((payload) => ({ page, payload }))
-            );
-        }
-
-        const settled = await Promise.allSettled(batch);
+// Pages are keyed by number in `read` so that the ones an additions probe
+// already fetched are reused by a full read instead of being requested twice.
+const readPages = async (slug, pages, read, { signal, token }) => {
+    const missing = pages.filter((page) => !read.has(page));
+    for (let start = 0; start < missing.length; start += REQUEST_BATCH) {
+        const batch = missing.slice(start, start + REQUEST_BATCH);
+        const settled = await Promise.allSettled(batch.map((page) =>
+            fetchArenaChannelContentsPage(slug, { page, per: PER_PAGE, sort: "position_asc", signal, token })
+        ));
         const failure = settled.find((result) => result.status === "rejected");
         if (failure) {
             throw failure.reason;
         }
-
-        orderedPages.push(...settled.map((result) => result.value));
+        settled.forEach((result, index) => read.set(batch[index], result.value));
     }
+};
 
-    orderedPages.sort((left, right) => left.page - right.page);
+const itemAt = (read, position) => read.get(Math.ceil(position / PER_PAGE))?.data?.[(position - 1) % PER_PAGE] ?? null;
+
+const normalizeChannelItems = (items, channel) => items.map((item) => normalizeArenaItem(item, {
+    sourceChannel: {
+        title: channel.title,
+        slug: channel.slug
+    }
+}));
+
+// The channel arrives already fetched, either on its own or from an account
+// listing, because the caller needs it to decide whether to download at all.
+export const fetchChannelBlocks = async (slug, channel, { signal, onProgress, token, read = new Map() } = {}) => {
+    if (!read.size) {
+        await readPages(slug, [1], read, { signal, token });
+    }
+    const totalPages = Math.min([...read.values()][0]?.meta?.total_pages || 1, MAX_PAGES);
+    await readPages(slug, pageRange(1, totalPages), read, { signal, token });
 
     const normalized = [];
-    for (const { page, payload } of orderedPages) {
+    for (const page of pageRange(1, totalPages)) {
+        const payload = read.get(page);
         const contents = Array.isArray(payload?.data) ? payload.data : [];
-        normalized.push(
-            ...contents.map((item) => normalizeArenaItem(item, {
-                sourceChannel: {
-                    title: channel.title,
-                    slug: channel.slug
-                }
-            }))
-        );
+        normalized.push(...normalizeChannelItems(contents, channel));
 
         if (typeof onProgress === "function") {
             onProgress({
@@ -300,6 +305,44 @@ export const fetchChannelBlocks = async (slug, channel, { signal, onProgress, to
     }
 
     return normalized;
+};
+
+const connectedAt = (item) => Date.parse(item?.connection?.connected_at);
+
+// New connections land at one end of a channel. Reading only that end finds
+// them, provided it holds exactly as many items as the count grew by, each
+// connected after the last sync, next to an item that was already there. Any
+// other shape (removals, reorders, additions at both ends) returns null and is
+// left to a full read, which reuses every page read here.
+export const fetchChannelAdditions = async (slug, channel, base, total, { signal, token, read = new Map() } = {}) => {
+    const added = total - base.count;
+    if (!(base.count > 0 && added > 0)) {
+        return null;
+    }
+
+    const fullPages = Math.min(Math.ceil(total / PER_PAGE), MAX_PAGES);
+    const ends = {
+        tail: { from: base.count + 1, to: total, anchor: base.count },
+        head: { from: 1, to: added, anchor: added + 1 }
+    };
+    const isNew = (item) => connectedAt(item) > base.at;
+
+    for (const end of base.grows === "head" ? ["head", "tail"] : ["tail", "head"]) {
+        const { from, to, anchor } = ends[end];
+        const needed = pagesSpanning(Math.min(from, anchor), Math.max(to, anchor)).filter((page) => !read.has(page));
+        if (read.size + needed.length >= fullPages) {
+            return null;
+        }
+
+        await readPages(slug, needed, read, { signal, token });
+        const items = pageRange(from, to).map((position) => itemAt(read, position));
+        const anchorItem = itemAt(read, anchor);
+        if (anchorItem && !isNew(anchorItem) && items.every((item) => item && isNew(item))) {
+            return { blocks: normalizeChannelItems(items, channel), grows: end };
+        }
+    }
+
+    return null;
 };
 
 export const fetchBlocksById = async (ids, signal, token) => {
@@ -352,7 +395,9 @@ export const fetchSourceBlocks = async ({
     onProgress,
     onChannelBlocks,
     onChannelUnchanged,
+    onChannelExtended,
     isChannelCurrent = () => false,
+    getSyncBase = () => null,
     listedChannels = null,
     freshSlugs = null
 }) => {
@@ -378,7 +423,18 @@ export const fetchSourceBlocks = async ({
         // Taken before the pages are read, so a change landing mid-download
         // still reads as newer than this download on the next check.
         const startedAt = Date.now();
-        const blocks = allowed(await fetchChannelBlocks(slug, channel, { signal, onProgress, token }));
+        const read = new Map();
+        const base = getSyncBase(slug, stamp);
+        const additions = base
+            ? await fetchChannelAdditions(slug, channel, base, stamp.count, { signal, token, read })
+            : null;
+        if (additions) {
+            onProgress?.({ slug, title: channel.title || slug });
+            await onChannelExtended?.(slug, allowed(additions.blocks), { stamp, startedAt, grows: additions.grows });
+            continue;
+        }
+
+        const blocks = allowed(await fetchChannelBlocks(slug, channel, { signal, onProgress, token, read }));
         await onChannelBlocks?.(slug, blocks, { stamp, startedAt });
     }
 

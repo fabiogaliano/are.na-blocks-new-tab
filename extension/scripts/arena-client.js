@@ -3,6 +3,9 @@ import { acquireRequestSlot, noteRateLimitExhausted, observeRateLimit, releaseRe
 
 const JSON_HEADERS = { Accept: "application/json" };
 const MAX_RETRIES = 3;
+// A server already failing is the worst one to send more of the same. One retry
+// covers a blip; anything longer is left to the next scheduled check.
+const MAX_SERVER_RETRIES = 1;
 const RETRY_BASE_DELAY = 1000;
 
 // A worker cannot reliably survive a Retry-After timeout. The cache lifecycle
@@ -137,7 +140,7 @@ export const fetchArenaJson = async (path, { signal, token } = {}) => {
                     throw error;
                 }
 
-                if (response.status >= 500 && attempt < MAX_RETRIES) {
+                if (response.status >= 500 && attempt < MAX_SERVER_RETRIES) {
                     await delay(RETRY_BASE_DELAY * Math.pow(2, attempt), signal);
                     continue;
                 }

@@ -7,6 +7,7 @@ import {
     getArenaAuth,
     getCache,
     getSettings,
+    extendCacheChannel,
     markChannelChecked,
     mergeCacheChannel,
     mergeCacheStandalone,
@@ -50,17 +51,42 @@ const keepFetchedSince = (channelFetchedAt, since) => Object.fromEntries(
 // ahead, from reading as already downloaded.
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
-// Nothing documents `updated_at` moving when a block already in the channel is
-// edited, so a channel that keeps reporting no change is still read again after
-// this long rather than never.
-const CHANNEL_REDOWNLOAD_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-const isDownloadCurrent = (download, stamp, now) =>
-    Number.isFinite(download?.at)
+// Nothing documents `updated_at` moving when a block already in the channel is
+// edited, and reading only additions never revisits old blocks, so every
+// channel is still read in full after this long rather than never.
+const CHANNEL_FULL_READ_AFTER_MS = 30 * DAY_MS;
+
+// Channels downloaded together would all fall due on the same day and land as
+// one burst. Spreading them across a second month by slug keeps that read in
+// small daily pieces.
+const fullReadAfter = (slug) => {
+    const hash = [...slug].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0);
+    return CHANNEL_FULL_READ_AFTER_MS + (hash % 30) * DAY_MS;
+};
+
+const needsFullRead = (slug, download, now) => {
+    const fullAt = download?.fullAt ?? download?.at;
+    return !Number.isFinite(fullAt) || now - fullAt >= fullReadAfter(slug);
+};
+
+const isDownloadCurrent = (slug, download, stamp, now) =>
+    !needsFullRead(slug, download, now)
     && Number.isFinite(stamp?.updatedAt)
     && stamp.updatedAt <= download.at - CLOCK_SKEW_MS
-    && (download.count == null || download.count === stamp.count)
-    && now - download.at < CHANNEL_REDOWNLOAD_AFTER_MS;
+    && (download.count == null || download.count === stamp.count);
+
+// A channel that only grew can be brought up to date by reading its additions.
+// Without a recorded count there is nothing to measure growth against.
+const getSyncBase = (slug, download, stamp, now) =>
+    !needsFullRead(slug, download, now)
+    && Number.isFinite(download.at)
+    && Number.isFinite(download.count)
+    && Number.isFinite(stamp?.count)
+    && stamp.count > download.count
+        ? { at: download.at, count: download.count, grows: download.grows || null }
+        : null;
 
 const sameIds = (left = [], right = []) =>
     left.length === right.length && left.every((id, index) => id === right[index]);
@@ -73,7 +99,7 @@ const seedChannelDownloads = (cache) => {
     Object.keys(cache.channelBlockIds || {}).forEach((slug) => {
         const at = cache.channelFetchedAt?.[slug];
         if (!downloads[slug] && Number.isFinite(at) && at > 0) {
-            downloads[slug] = { at, count: null };
+            downloads[slug] = { at, fullAt: at, count: null };
         }
     });
     return { ...cache, channelDownloads: downloads };
@@ -165,7 +191,8 @@ const refreshLocal = async ({ testOnly = false, force = false, requestedAt = Dat
         token: auth.token,
         freshSlugs,
         listedChannels,
-        isChannelCurrent: (slug, stamp) => isDownloadCurrent(cache.channelDownloads?.[slug], stamp, Date.now()),
+        isChannelCurrent: (slug, stamp) => isDownloadCurrent(slug, cache.channelDownloads?.[slug], stamp, Date.now()),
+        getSyncBase: (slug, stamp) => getSyncBase(slug, cache.channelDownloads?.[slug], stamp, Date.now()),
         onProgress: ({ title, slug }) => {
             currentChannel = title || slug;
             report();
@@ -174,6 +201,12 @@ const refreshLocal = async ({ testOnly = false, force = false, requestedAt = Dat
         onChannelBlocks: async (slug, blocks, { stamp, startedAt }) => {
             await persistBlocks(blocks);
             await persist(mergeCacheChannel(cache, slug, blocks, { downloadedAt: startedAt, count: stamp.count }));
+            channelsDone += 1;
+            report();
+        },
+        onChannelExtended: async (slug, blocks, { stamp, startedAt, grows }) => {
+            await persistBlocks(blocks);
+            await persist(extendCacheChannel(cache, slug, blocks, { downloadedAt: startedAt, count: stamp.count, grows }));
             channelsDone += 1;
             report();
         },

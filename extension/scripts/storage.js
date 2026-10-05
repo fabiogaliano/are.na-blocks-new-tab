@@ -95,13 +95,32 @@ const rebuildIndex = (cache) => {
 };
 
 // `channelFetchedAt` is when a channel was last looked at, which decides when
-// it is due again. `channelDownloads` is when its blocks were last read and how
-// many contents it had then, which decides whether looking costs a download.
+// it is due again. `channelDownloads` records what the cached blocks reflect:
+// `at` the last sync, `count` the contents then, `fullAt` the last complete
+// read, and `grows` the end new connections were last found at.
 export const mergeCacheChannel = (cache, slug, blocks, { at = Date.now(), downloadedAt = at, count = null } = {}) => rebuildIndex({
     ...cache,
     channelBlockIds: { ...(cache?.channelBlockIds || {}), [slug]: blocks.map((block) => block.id) },
     channelFetchedAt: { ...(cache?.channelFetchedAt || {}), [slug]: at },
-    channelDownloads: { ...(cache?.channelDownloads || {}), [slug]: { at: downloadedAt, count } }
+    channelDownloads: {
+        ...(cache?.channelDownloads || {}),
+        [slug]: { ...(cache?.channelDownloads?.[slug] || {}), at: downloadedAt, fullAt: downloadedAt, count }
+    }
+});
+
+// Only the blocks connected since the last sync were read, so they join the
+// channel's membership instead of replacing it, and `fullAt` stays put.
+export const extendCacheChannel = (cache, slug, blocks, { at = Date.now(), downloadedAt = at, count = null, grows = null } = {}) => rebuildIndex({
+    ...cache,
+    channelBlockIds: {
+        ...(cache?.channelBlockIds || {}),
+        [slug]: [...new Set([...(cache?.channelBlockIds?.[slug] || []), ...blocks.map((block) => block.id)])]
+    },
+    channelFetchedAt: { ...(cache?.channelFetchedAt || {}), [slug]: at },
+    channelDownloads: {
+        ...(cache?.channelDownloads || {}),
+        [slug]: { ...(cache?.channelDownloads?.[slug] || {}), at: downloadedAt, count, grows }
+    }
 });
 
 // A record seeded from an older cache has no count yet. The channel has not

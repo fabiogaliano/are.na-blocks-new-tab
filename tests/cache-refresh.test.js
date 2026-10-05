@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const env = vi.hoisted(() => ({
     data: new Map(),
     stamps: {},
+    additions: {},
     sendMessage: null,
     fetchSourceBlocks: null,
     fetchAccountChannelIndex: null
@@ -89,7 +90,15 @@ const storedCache = () => env.data.get(STORAGE_KEYS.cache);
 
 // Stands in for the real loop in arena.js: what it decides per channel is under
 // test there, and here only the policy this module hands it.
-const emulateSourceFetch = () => vi.fn(async ({ channelSlugs, freshSlugs, isChannelCurrent, onChannelBlocks, onChannelUnchanged }) => {
+const emulateSourceFetch = () => vi.fn(async ({
+    channelSlugs,
+    freshSlugs,
+    isChannelCurrent,
+    getSyncBase,
+    onChannelBlocks,
+    onChannelExtended,
+    onChannelUnchanged
+}) => {
     for (const slug of channelSlugs) {
         if (freshSlugs?.has(slug)) {
             continue;
@@ -97,6 +106,10 @@ const emulateSourceFetch = () => vi.fn(async ({ channelSlugs, freshSlugs, isChan
         const stamp = env.stamps[slug] || { updatedAt: null, count: null };
         if (isChannelCurrent(slug, stamp)) {
             await onChannelUnchanged(slug, stamp);
+            continue;
+        }
+        if (getSyncBase(slug, stamp) && env.additions[slug]) {
+            await onChannelExtended(slug, env.additions[slug], { stamp, startedAt: Date.now(), grows: "tail" });
             continue;
         }
         await onChannelBlocks(slug, [{ id: `${slug}-new`, kind: "Image" }], { stamp, startedAt: Date.now() });
@@ -109,6 +122,7 @@ const downloadedSlugs = () => storedCache().blockIds.filter((id) => id.endsWith(
 beforeEach(() => {
     env.data.clear();
     env.stamps = {};
+    env.additions = {};
     env.sendMessage = vi.fn();
     env.fetchSourceBlocks = emulateSourceFetch();
     env.fetchAccountChannelIndex = vi.fn(async () => new Map());
@@ -191,8 +205,8 @@ describe("unchanged channels", () => {
         expect(downloadedSlugs()).toEqual(["one"]);
     });
 
-    it("are still read again after a month without reported changes", async () => {
-        const downloadedAt = Date.now() - 31 * DAY;
+    it("are still read in full once the spread month has passed", async () => {
+        const downloadedAt = Date.now() - 60 * DAY;
         seedCache({
             channelFetchedAt: { one: downloadedAt },
             channelDownloads: { one: { at: downloadedAt, count: 5 } }
@@ -212,7 +226,7 @@ describe("unchanged channels", () => {
         await cacheLifecycle.refresh({ force: true });
 
         expect(downloadedSlugs()).toEqual([]);
-        expect(storedCache().channelDownloads.one).toEqual({ at: fetchedAt, count: 7 });
+        expect(storedCache().channelDownloads.one).toEqual({ at: fetchedAt, fullAt: fetchedAt, count: 7 });
     });
 
     it("are all downloaded when the type filters changed", async () => {
@@ -227,6 +241,54 @@ describe("unchanged channels", () => {
         await cacheLifecycle.refresh();
 
         expect(downloadedSlugs()).toEqual(["one"]);
+    });
+});
+
+describe("channels that only grew", () => {
+    const grownChannel = (count) => {
+        const syncedAt = Date.now() - 2 * DAY;
+        seedCache({
+            channelFetchedAt: { one: syncedAt },
+            channelDownloads: { one: { at: syncedAt, fullAt: syncedAt - 5 * DAY, count: 5 } }
+        });
+        env.stamps.one = { updatedAt: syncedAt + HOUR, count };
+        env.additions.one = [{ id: "one-added", kind: "Image" }];
+        return syncedAt;
+    };
+
+    it("keep their blocks and gain the new ones", async () => {
+        const syncedAt = grownChannel(7);
+
+        await cacheLifecycle.refresh();
+
+        expect(storedCache().channelBlockIds.one).toEqual(["one", "one-added"]);
+        expect(storedCache().blockIds.sort()).toEqual(["one", "one-added"]);
+        expect(storedCache().channelDownloads.one).toMatchObject({ count: 7, grows: "tail", fullAt: syncedAt - 5 * DAY });
+        expect(storedCache().channelDownloads.one.at).toBeGreaterThan(syncedAt);
+    });
+
+    it("are read in full when the count fell instead", async () => {
+        grownChannel(4);
+
+        await cacheLifecycle.refresh();
+
+        expect(downloadedSlugs()).toEqual(["one"]);
+        expect(storedCache().channelBlockIds.one).toEqual(["one-new"]);
+    });
+});
+
+describe("full reads", () => {
+    it("are not due before a month has passed", async () => {
+        const downloadedAt = Date.now() - 29 * DAY;
+        seedCache({
+            channelFetchedAt: { one: downloadedAt },
+            channelDownloads: { one: { at: downloadedAt, fullAt: downloadedAt, count: 5 } }
+        });
+        env.stamps.one = { updatedAt: downloadedAt - DAY, count: 5 };
+
+        await cacheLifecycle.refresh({ force: true });
+
+        expect(downloadedSlugs()).toEqual([]);
     });
 });
 

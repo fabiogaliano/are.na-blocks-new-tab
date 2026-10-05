@@ -7,7 +7,9 @@ import { storage } from "./extension-api.js";
 const GUEST_LIMIT = 30;
 const BUDGET_RATIO = 0.85;
 const DEFAULT_WINDOW_MS = 60 * 1000;
-const MAX_CONCURRENT = 4;
+// Syncing runs in the background and nothing waits on its speed, so requests go
+// out two at a time rather than in bursts Are.na has to absorb.
+const MAX_CONCURRENT = 2;
 const WINDOW_PUMP_MARGIN_MS = 50;
 
 const state = {
