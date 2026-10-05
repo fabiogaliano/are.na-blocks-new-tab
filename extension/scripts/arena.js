@@ -238,11 +238,21 @@ const normalizeArenaItem = (item, context = {}) => {
     };
 };
 
-export const fetchChannelBlocks = async (slug, signal, onProgress, token) => {
-    const [channel, firstPage] = await Promise.all([
-        fetchArenaChannel(slug, { signal, token }),
-        fetchArenaChannelContentsPage(slug, { page: 1, per: PER_PAGE, sort: "position_asc", signal, token })
-    ]);
+// What a channel says about its contents without listing them. Comparing it to
+// what was recorded at the last download is what lets an unchanged channel cost
+// one request, or none when an account listing already carried it.
+export const getChannelStamp = (channel) => {
+    const updatedAt = Date.parse(channel?.updated_at);
+    return {
+        updatedAt: Number.isFinite(updatedAt) ? updatedAt : null,
+        count: Number.isFinite(channel?.counts?.contents) ? channel.counts.contents : null
+    };
+};
+
+// The channel arrives already fetched, either on its own or from an account
+// listing, because the caller needs it to decide whether to download at all.
+export const fetchChannelBlocks = async (slug, channel, { signal, onProgress, token } = {}) => {
+    const firstPage = await fetchArenaChannelContentsPage(slug, { page: 1, per: PER_PAGE, sort: "position_asc", signal, token });
 
     const totalPages = Math.min(firstPage?.meta?.total_pages || 1, MAX_PAGES);
     const orderedPages = [{ page: 1, payload: firstPage }];
@@ -341,6 +351,9 @@ export const fetchSourceBlocks = async ({
     signal,
     onProgress,
     onChannelBlocks,
+    onChannelUnchanged,
+    isChannelCurrent = () => false,
+    listedChannels = null,
     freshSlugs = null
 }) => {
     const allowedTypes = new Set(filters?.length ? filters : BLOCK_TYPES);
@@ -355,10 +368,18 @@ export const fetchSourceBlocks = async ({
         // whole download. Naming the slug first is what makes progress live; the
         // title replaces it once the channel itself has been read.
         onProgress?.({ slug, title: null });
-        const blocks = allowed(await fetchChannelBlocks(slug, signal, onProgress, token));
-        if (typeof onChannelBlocks === "function") {
-            await onChannelBlocks(slug, blocks);
+        const channel = listedChannels?.get(slug) || await fetchArenaChannel(slug, { signal, token });
+        const stamp = getChannelStamp(channel);
+        if (isChannelCurrent(slug, stamp)) {
+            await onChannelUnchanged?.(slug, stamp);
+            continue;
         }
+
+        // Taken before the pages are read, so a change landing mid-download
+        // still reads as newer than this download on the next check.
+        const startedAt = Date.now();
+        const blocks = allowed(await fetchChannelBlocks(slug, channel, { signal, onProgress, token }));
+        await onChannelBlocks?.(slug, blocks, { stamp, startedAt });
     }
 
     const standaloneBlocks = [];

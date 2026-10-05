@@ -1,9 +1,10 @@
-import { CACHE_STATE } from "./constants.js";
+import { CACHE_CHECK_INTERVAL_MS, CACHE_STATE } from "./constants.js";
 import { formatRelativeTime } from "./time.js";
 
-// Past this the cache is still usable but no longer worth calling current, so
-// the status names the age instead of claiming freshness.
-const FRESH_WINDOW_MS = 60 * 60 * 1000;
+// Past the check interval the cache is still usable but no longer worth calling
+// current, so the status names the age instead of claiming freshness. A shorter
+// window would call the cache stale for most of the time between checks.
+const FRESH_WINDOW_MS = CACHE_CHECK_INTERVAL_MS;
 
 // Are.na's edge answers traffic it takes for a bot with a 403 carrying this
 // text, whatever the token. Reading it as an auth failure sends the user off to

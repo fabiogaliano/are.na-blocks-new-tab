@@ -248,8 +248,9 @@ async function triggerCacheRefresh(reason = "manual") {
   state.cacheMeta = { ...state.cacheMeta, state: CACHE_STATE.working, lastError: null, retryAt: 0 };
   updateCacheStatus();
   try {
-    // A fresh manual request replaces the cache; a cooldown retry preserves the
-    // channel checkpoints that make the paused pass resumable.
+    // A manual request checks every channel now, downloading only the ones that
+    // changed; a cooldown retry preserves the channel checkpoints that make the
+    // paused pass resumable.
     await runtimeCacheLifecycle.refresh({ reason, force: !resumeFromCooldown });
     applyCacheSnapshot(await runtimeCacheLifecycle.read());
     return true;

@@ -4,6 +4,7 @@ export const STORAGE_KEYS = {
     cacheMeta: "blockCacheMeta",
     bootstrap: "bootstrapState",
     arenaAuth: "arenaAuth",
+    arenaCatalog: "arenaCatalog",
     rateLimit: "arenaRateLimit",
     bookmarkState: "bookmarkState",
     bookmarkTrash: "bookmarkTrash",
@@ -91,6 +92,11 @@ export const BOOKMARK_REFRESH_DEBOUNCE = 250;
 // discards v4 caches, which carried every block inline and are the payload this
 // version exists to stop writing.
 export const CACHE_VERSION = 5;
+
+// Curated channels change over days, not minutes, and a new tab draws at random
+// from thousands of blocks. Checking more often buys nothing visible and spends
+// requests Are.na has started refusing.
+export const CACHE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export const ARENA_API_ROOT = "https://api.are.na/v3";
 

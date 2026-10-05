@@ -13,6 +13,7 @@ What differs from the original:
 - Bookmarks show unread post counts from RSS/Atom feeds, refreshed by a background alarm.
 - The block cache lives in IndexedDB instead of a single storage key, so it is no longer capped by the storage quota.
 - Channel refreshes run incrementally, report progress and resume partial passes after an interruption.
+- The cache is checked once a day rather than every hour. Channels that have not changed since their last download are skipped, and account channels are checked in bulk from your channel lists, so a routine check costs a couple of requests instead of one per channel.
 - Are.na requests are throttled to stay inside the observed rate limits.
 - Up to 8 blocks per new tab, and clicking a tile opens its Are.na page.
 - Settings open in a slide-over from the new tab.

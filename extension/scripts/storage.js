@@ -11,7 +11,9 @@ const createDefaultCache = () => ({
     blockIds: [],
     channelBlockIds: {},
     channelFetchedAt: {},
+    channelDownloads: {},
     standaloneBlockIds: [],
+    standaloneFetchedAt: 0,
     sources: {
         channels: [],
         manualChannels: [],
@@ -92,14 +94,31 @@ const rebuildIndex = (cache) => {
     return { ...cache, blockIds: [...retained] };
 };
 
-export const mergeCacheChannel = (cache, slug, blocks, at = Date.now()) => rebuildIndex({
+// `channelFetchedAt` is when a channel was last looked at, which decides when
+// it is due again. `channelDownloads` is when its blocks were last read and how
+// many contents it had then, which decides whether looking costs a download.
+export const mergeCacheChannel = (cache, slug, blocks, { at = Date.now(), downloadedAt = at, count = null } = {}) => rebuildIndex({
     ...cache,
     channelBlockIds: { ...(cache?.channelBlockIds || {}), [slug]: blocks.map((block) => block.id) },
-    channelFetchedAt: { ...(cache?.channelFetchedAt || {}), [slug]: at }
+    channelFetchedAt: { ...(cache?.channelFetchedAt || {}), [slug]: at },
+    channelDownloads: { ...(cache?.channelDownloads || {}), [slug]: { at: downloadedAt, count } }
 });
 
+// A record seeded from an older cache has no count yet. The channel has not
+// changed since that download, so the count it reports now is the one it had.
+export const markChannelChecked = (cache, slug, { count = null } = {}, at = Date.now()) => {
+    const download = cache?.channelDownloads?.[slug];
+    return {
+        ...cache,
+        channelFetchedAt: { ...(cache?.channelFetchedAt || {}), [slug]: at },
+        channelDownloads: download
+            ? { ...cache.channelDownloads, [slug]: { ...download, count: download.count ?? count } }
+            : cache?.channelDownloads || {}
+    };
+};
+
 // Blocks fetched by id and blocks pulled from the feed have no channel to be
-// refreshed against, so every pass replaces them wholesale.
+// refreshed against, so a pass that fetches them replaces them wholesale.
 export const mergeCacheStandalone = (cache, blocks) => rebuildIndex({
     ...cache,
     standaloneBlockIds: blocks.map((block) => block.id)
@@ -111,7 +130,8 @@ export const pruneCacheChannels = (cache, slugs) => {
     // while the membership it has to prune stays behind in `channelBlockIds`.
     const tracked = new Set([
         ...Object.keys(cache?.channelBlockIds || {}),
-        ...Object.keys(cache?.channelFetchedAt || {})
+        ...Object.keys(cache?.channelFetchedAt || {}),
+        ...Object.keys(cache?.channelDownloads || {})
     ]);
     if ([...tracked].every((slug) => keep.has(slug))) {
         return cache;
@@ -121,7 +141,8 @@ export const pruneCacheChannels = (cache, slugs) => {
     return rebuildIndex({
         ...cache,
         channelBlockIds: kept(cache?.channelBlockIds),
-        channelFetchedAt: kept(cache?.channelFetchedAt)
+        channelFetchedAt: kept(cache?.channelFetchedAt),
+        channelDownloads: kept(cache?.channelDownloads)
     });
 };
 
@@ -161,7 +182,17 @@ export const saveArenaAuth = async ({ token, user }) => {
 };
 
 export const clearArenaAuth = async () => {
-    await storage.remove(STORAGE_KEYS.arenaAuth);
+    await storage.remove([STORAGE_KEYS.arenaAuth, STORAGE_KEYS.arenaCatalog]);
+};
+
+export const getArenaCatalog = async () => {
+    const raw = await storage.get(STORAGE_KEYS.arenaCatalog);
+    return raw?.[STORAGE_KEYS.arenaCatalog] || null;
+};
+
+export const saveArenaCatalog = async (catalog) => {
+    await storage.set({ [STORAGE_KEYS.arenaCatalog]: catalog });
+    return catalog;
 };
 
 export const getFeedState = async () => {

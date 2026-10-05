@@ -55,9 +55,9 @@ describe("getCacheLed", () => {
         expect(getCacheLed({ state: CACHE_STATE.working, lastUpdated: NOW, now: NOW })).toBe("working");
     });
 
-    it("splits an idle cache on the one hour freshness window", () => {
-        expect(getCacheLed({ lastUpdated: NOW - 59 * MINUTE, now: NOW })).toBe("fresh");
-        expect(getCacheLed({ lastUpdated: NOW - 2 * HOUR, now: NOW })).toBe("stale");
+    it("splits an idle cache on the daily check interval", () => {
+        expect(getCacheLed({ lastUpdated: NOW - 23 * HOUR, now: NOW })).toBe("fresh");
+        expect(getCacheLed({ lastUpdated: NOW - 25 * HOUR, now: NOW })).toBe("stale");
         expect(getCacheLed({ lastUpdated: 0, now: NOW })).toBe("idle");
     });
 });
@@ -93,10 +93,10 @@ describe("describeCacheStatus", () => {
 
     it("names the age of a stale cache instead", () => {
         expect(describeCacheStatus({
-            lastUpdated: NOW - 3 * HOUR,
+            lastUpdated: NOW - 3 * 24 * HOUR,
             blockCount: 42,
             now: NOW
-        })).toEqual({ led: "stale", label: "Updated 3 hrs ago" });
+        })).toEqual({ led: "stale", label: "Updated 3 days ago" });
     });
 
     it("reports an empty cache", () => {

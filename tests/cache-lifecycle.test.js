@@ -97,6 +97,26 @@ describe("forced refresh queued behind another pass", () => {
     });
 });
 
+describe("source edits", () => {
+    it("queue behind a pass that read the settings before the edit", async () => {
+        let finishFirst;
+        const refreshLocal = vi.fn()
+            .mockImplementationOnce(() => new Promise((resolve) => {
+                finishFirst = () => resolve(SUMMARY);
+            }))
+            .mockResolvedValue(SUMMARY);
+        const { lifecycle } = createHarness({ refreshLocal });
+
+        const stale = lifecycle.refresh({ reason: "stale" });
+        const edited = lifecycle.refresh({ reason: "sources", sourcesChanged: true });
+        finishFirst();
+        await Promise.all([stale, edited]);
+
+        expect(refreshLocal).toHaveBeenCalledTimes(2);
+        expect(refreshLocal.mock.calls[1][0].force).toBeUndefined();
+    });
+});
+
 describe("page fallback when the worker cannot be reached", () => {
     it("leaves a pass that is still beating to finish", async () => {
         const refreshLocal = vi.fn(async () => SUMMARY);

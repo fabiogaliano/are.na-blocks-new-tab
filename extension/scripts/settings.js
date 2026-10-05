@@ -4,11 +4,13 @@ import {
     clearArenaAuth,
     clearCache,
     getArenaAuth,
+    getArenaCatalog,
     getSettings,
     saveArenaAuth,
+    saveArenaCatalog,
     saveSettings
 } from "./storage.js";
-import { connectArenaAccount, loadArenaAccountCatalog } from "./arena-account.js";
+import { connectArenaAccount, isCatalogCurrent, loadArenaAccountCatalog } from "./arena-account.js";
 import { getChannelRequestCost } from "./arena.js";
 import { createBarEditor } from "./bar-customization.js";
 import { canonicalizeSettings, classifySettingsChanges } from "./settings-model.js";
@@ -190,7 +192,7 @@ async function init() {
         renderAccountState();
         wireEvents();
         if (state.auth.token) {
-            await loadAccountCatalog({ quiet: true });
+            await loadAccountCatalog({ quiet: true, reuseStored: true });
         }
         const initialSection = readSectionFromHash();
         setActiveSettingsSection(initialSection);
@@ -1022,7 +1024,10 @@ async function flushSourceRefresh() {
     }
     state.pendingSourceRefresh = false;
     try {
-        await runtimeCacheLifecycle.refresh({ force: true });
+        // Not forced: an ordinary pass already fetches channels it has never seen
+        // and drops removed ones, so an edit costs only what it added. The flag
+        // keeps it from joining a pass that read the settings before the edit.
+        await runtimeCacheLifecycle.refresh({ reason: "sources", sourcesChanged: true });
     } catch (error) {
         console.error("Source refresh failed", error);
         showStatus(`Refresh failed: ${sanitizeErrorLabel(error.message)}`);
@@ -1162,7 +1167,7 @@ async function handleDisconnectArena(event) {
         });
         renderAccountState();
         renderAccountCatalog(new Set());
-        await runtimeCacheLifecycle.refresh();
+        await runtimeCacheLifecycle.refresh({ reason: "disconnect", sourcesChanged: true });
         showStatus("Are.na account disconnected and account sources removed.");
     } catch (error) {
         console.error("Are.na disconnect failed", error);
@@ -1172,7 +1177,7 @@ async function handleDisconnectArena(event) {
     }
 }
 
-async function loadAccountCatalog({ quiet = false } = {}) {
+async function loadAccountCatalog({ quiet = false, reuseStored = false } = {}) {
     if (!state.auth.token || !state.auth.user) {
         renderAccountState();
         return;
@@ -1185,7 +1190,16 @@ async function loadAccountCatalog({ quiet = false } = {}) {
         elements.reloadAccountChannelsButton.disabled = true;
     }
     try {
-        const catalog = await loadArenaAccountCatalog(state.auth);
+        // Opening settings is not a reason to ask Are.na again. Connecting and
+        // the reload button are, so only the initial load reuses what is stored.
+        const stored = reuseStored ? await getArenaCatalog() : null;
+        const catalog = isCatalogCurrent(stored, state.auth.user)
+            ? stored
+            : await saveArenaCatalog({
+                ...(await loadArenaAccountCatalog(state.auth)),
+                userSlug: state.auth.user.slug,
+                fetchedAt: Date.now()
+            });
         state.ownedChannels = catalog.ownedChannels;
         state.followedChannels = catalog.followedChannels;
         state.ownedTotal = catalog.ownedTotal;
@@ -1303,10 +1317,10 @@ function updateAccountCostNote(selected) {
     }
 
     const cost = chosen.reduce((total, channel) => total + getChannelRequestCost(channel.contentCount), 0);
-    const summary = `~${cost} request${cost === 1 ? "" : "s"} to sync ${chosen.length} selected account channel${chosen.length === 1 ? "" : "s"}`;
+    const summary = `~${cost} request${cost === 1 ? "" : "s"} to download ${chosen.length} selected account channel${chosen.length === 1 ? "" : "s"}`;
     const rate = readRateLimit();
 
-    const otherSourcesNote = "Other configured sources may add requests.";
+    const otherSourcesNote = "Daily checks after that download only the channels that changed. Other configured sources may add requests.";
     if (!rate) {
         elements.accountCostNote.textContent = `${summary}. ${otherSourcesNote}`;
     } else {
