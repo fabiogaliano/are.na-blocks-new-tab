@@ -9,6 +9,11 @@ const WORKING_STALE_MS = 3 * 60 * 1000;
 // written per page fetched. One tick is the finest granularity worth paying for.
 const WORKING_TICK_MS = 1000;
 
+// Every resume spends a request into the window that just refused one. A limit
+// still hit after this many resumes is not a passing burst, so the pass gives up
+// until the next stale check instead of knocking again every minute.
+const MAX_RATE_LIMIT_PAUSES = 3;
+
 const hasCachedBlocks = (cache) => Array.isArray(cache?.blockIds) && cache.blockIds.length > 0;
 
 // `completedAt` only moves when a whole pass finishes. A pass that stopped
@@ -23,9 +28,11 @@ const getErrorMessage = (error) => error instanceof Error ? error.message : `${e
 const getRetryAt = (error) => Number.isFinite(error?.retryAt) ? error.retryAt : 0;
 
 const getRefreshKey = (options = {}) => {
-    // `reason` identifies the caller but cannot change the resulting cache.
+    // `reason` identifies the caller and `requestedAt` when it asked; neither
+    // changes which refresh is being asked for.
     const refreshOptions = { ...options };
     delete refreshOptions.reason;
+    delete refreshOptions.requestedAt;
     return JSON.stringify(refreshOptions);
 };
 
@@ -62,6 +69,19 @@ export const createCacheLifecycle = ({
             throw new Error("Cache storage returned an invalid snapshot");
         }
         return snapshot;
+    };
+
+    const isLivePass = (meta) =>
+        meta.state === CACHE_STATE.working && now() - (meta.heartbeatAt || 0) <= WORKING_STALE_MS;
+
+    // Runs inside a failed refresh, where a storage error must not replace the
+    // 429 being handled or leave `working` behind.
+    const readRateLimitPauses = async () => {
+        try {
+            return (await read()).meta.rateLimitPauses || 0;
+        } catch (_) {
+            return 0;
+        }
     };
 
     // One timer covers both jobs: a tick with new progress publishes it, and a
@@ -124,31 +144,38 @@ export const createCacheLifecycle = ({
                 lastError: null,
                 blockCount: summary.blockCount,
                 retryAt: 0,
-                progress: null
+                progress: null,
+                rateLimitPauses: 0
             });
             return summary;
         } catch (error) {
             const progress = await report.stop();
             const retryAt = getRetryAt(error);
+            const pauses = retryAt > now() ? (await readRateLimitPauses()) + 1 : 0;
 
-            if (retryAt > now()) {
+            if (retryAt > now() && pauses < MAX_RATE_LIMIT_PAUSES) {
                 // `lastUpdated` deliberately stays put: the channels this pass
                 // never reached must still read as stale once the window opens.
                 await writeCacheMeta({
                     state: CACHE_STATE.cooldown,
                     lastError: null,
                     retryAt,
-                    progress
+                    progress,
+                    rateLimitPauses: pauses
                 });
                 await scheduleResume(retryAt);
             } else {
+                // Stamping `lastUpdated` is what holds the next attempt back for a
+                // whole stale window. The channels this pass did reach keep their
+                // own timestamps, so that attempt still resumes rather than restarts.
                 await cancelResume();
                 await writeCacheMeta({
                     state: CACHE_STATE.error,
                     lastError: getErrorMessage(error),
                     lastUpdated: now(),
                     retryAt: 0,
-                    progress: null
+                    progress: null,
+                    rateLimitPauses: 0
                 });
             }
             throw error;
@@ -160,6 +187,19 @@ export const createCacheLifecycle = ({
             const summary = await refreshRemote(options);
             if (summary?.cacheVersion === cacheVersion) {
                 return summary;
+            }
+
+            // Only the worker paces requests across tabs. A page that cannot
+            // reach it and finds a pass already running would start a second one
+            // under a rate limiter of its own, so it leaves that pass to finish
+            // and lets the stored progress report it.
+            const snapshot = await read();
+            if (isLivePass(snapshot.meta)) {
+                return {
+                    blockCount: snapshot.cache.blockIds.length,
+                    completedAt: snapshot.cache.completedAt || 0,
+                    cacheVersion
+                };
             }
         }
 
@@ -209,6 +249,13 @@ export const createCacheLifecycle = ({
     };
 
     const refresh = (options = {}) => {
+        // A forced pass only owes the user data newer than their request.
+        // Stamping the request rather than the start lets a pass queued behind
+        // another keep the channels that one fetched after the user asked.
+        if (options.force && !Number.isFinite(options.requestedAt)) {
+            options = { ...options, requestedAt: now() };
+        }
+
         const key = getRefreshKey(options);
         if (!refreshPromise) {
             return startRefresh(options, key);
@@ -217,6 +264,9 @@ export const createCacheLifecycle = ({
             return refreshPromise;
         }
         if (key === queuedRefresh?.key) {
+            // The latest caller asked last, so its request time is the one the
+            // queued pass has to honour.
+            queuedRefresh.options = options;
             return queuedRefresh.promise;
         }
         return queueRefresh(options, key);
@@ -287,12 +337,25 @@ export const createCacheLifecycle = ({
         return read();
     };
 
+    // An empty cache has no age to go stale, so this is the only thing between a
+    // failed or paused first build and a retry from every tab that opens.
+    const isBackingOff = (meta) => {
+        if (meta.state === CACHE_STATE.cooldown) {
+            return now() < (meta.retryAt || 0);
+        }
+        if (meta.state === CACHE_STATE.error) {
+            return Number.isFinite(staleAfterMs) && staleAfterMs >= 0
+                && now() - (meta.lastUpdated || 0) < staleAfterMs;
+        }
+        return false;
+    };
+
     const shouldRefreshStaleCache = (snapshot) => {
         if (refreshPromise) {
             return false;
         }
         if (snapshot.meta.state === CACHE_STATE.working) {
-            return now() - (snapshot.meta.heartbeatAt || 0) > WORKING_STALE_MS;
+            return !isLivePass(snapshot.meta);
         }
         // Opening a tab is the second way a paused pass resumes, and the only one
         // left where `chrome.alarms` is unavailable. Before `retryAt` it must not
@@ -311,7 +374,7 @@ export const createCacheLifecycle = ({
         let snapshot = await read();
 
         if (!hasCachedBlocks(snapshot.cache)) {
-            if (bootstrapStore && bootstrapAttempted) {
+            if ((bootstrapStore && bootstrapAttempted) || isBackingOff(snapshot.meta)) {
                 return { ...snapshot, refreshed: false, summary: null };
             }
 

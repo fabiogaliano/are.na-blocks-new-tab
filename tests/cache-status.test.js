@@ -3,8 +3,10 @@ import { CACHE_STATE } from "../extension/scripts/constants.js";
 import {
     describeCacheStatus,
     formatResumeDelay,
+    getCacheErrorLabel,
     getCacheLed,
-    getSyncPercent
+    getSyncPercent,
+    isAutomatedAccessBlock
 } from "../extension/scripts/cache-status.js";
 
 const NOW = Date.UTC(2026, 8, 15, 12, 0, 0);
@@ -107,5 +109,27 @@ describe("describeCacheStatus", () => {
             errorLabel: "Offline",
             now: NOW
         })).toEqual({ led: "error", label: "Offline" });
+    });
+});
+
+describe("getCacheErrorLabel", () => {
+    const BLOCKED = "Are.na request failed (403): 403 - Automated access blocked\n\nThis site is built and maintained by a small team of people.";
+
+    it("names Are.na's bot block instead of blaming the token", () => {
+        expect(isAutomatedAccessBlock(BLOCKED)).toBe(true);
+        expect(getCacheErrorLabel(BLOCKED)).toBe("Blocked by Are.na");
+    });
+
+    it("still reads other 401 and 403 responses as auth failures", () => {
+        expect(isAutomatedAccessBlock("Are.na request failed (403): Forbidden")).toBe(false);
+        expect(getCacheErrorLabel("Are.na request failed (403): Forbidden")).toBe("Auth error");
+        expect(getCacheErrorLabel("Are.na request failed (401): Unauthorized")).toBe("Auth error");
+    });
+
+    it("keeps the remaining labels short enough for the button", () => {
+        expect(getCacheErrorLabel("Are.na request failed (429): slow down")).toBe("Rate limited");
+        expect(getCacheErrorLabel("Failed to fetch")).toBe("Offline");
+        expect(getCacheErrorLabel("<p>Something unexpected went wrong</p>")).toBe("Something unexpec...");
+        expect(getCacheErrorLabel(null)).toBe("Error");
     });
 });

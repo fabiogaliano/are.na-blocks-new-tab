@@ -29,7 +29,8 @@ const DEFAULT_CACHE_META = {
     blockCount: 0,
     heartbeatAt: 0,
     retryAt: 0,
-    progress: null
+    progress: null,
+    rateLimitPauses: 0
 };
 
 const DEFAULT_ARENA_AUTH = {
@@ -106,8 +107,8 @@ export const mergeCacheStandalone = (cache, blocks) => rebuildIndex({
 
 export const pruneCacheChannels = (cache, slugs) => {
     const keep = new Set(slugs);
-    // Both records, because a forced pass clears `channelFetchedAt` while the
-    // membership it has to prune stays behind in `channelBlockIds`.
+    // Both records, because a forced pass drops entries from `channelFetchedAt`
+    // while the membership it has to prune stays behind in `channelBlockIds`.
     const tracked = new Set([
         ...Object.keys(cache?.channelBlockIds || {}),
         ...Object.keys(cache?.channelFetchedAt || {})

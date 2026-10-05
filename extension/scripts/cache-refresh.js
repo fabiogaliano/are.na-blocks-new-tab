@@ -17,6 +17,11 @@ import { createCacheLifecycle } from "./cache-lifecycle.js";
 const CACHE_STALE_AFTER_MS = 60 * 60 * 1000;
 const RUNTIME_ROUTE_UNAVAILABLE = /receiving end|message port closed|did not return a result/i;
 
+// A worker MV3 tears down mid-pass drops the reply it owed. Sending again starts
+// a fresh worker that resumes from the checkpoints, so only a route that stays
+// down leaves the refresh to this page.
+const RUNTIME_ATTEMPTS = 2;
+
 const getFreshChannelSlugs = (cache, now) => {
     const tracked = cache?.channelFetchedAt || {};
     return new Set(
@@ -35,13 +40,17 @@ const filtersMatch = (cache, filters) => {
         && filters.every((filter) => cached.includes(filter));
 };
 
-const refreshLocal = async ({ testOnly = false, force = false, settingsOverride = null } = {}, { onProgress } = {}) => {
+const keepFetchedSince = (channelFetchedAt, since) => Object.fromEntries(
+    Object.entries(channelFetchedAt || {}).filter(([, at]) => Number.isFinite(at) && at >= since)
+);
+
+const refreshLocal = async ({ testOnly = false, force = false, requestedAt = Date.now(), settingsOverride = null } = {}, { onProgress } = {}) => {
     const settings = settingsOverride || (await getSettings());
     const auth = await getArenaAuth();
     const channelSlugs = [...new Set([...settings.channelSlugs, ...settings.accountChannelSlugs].filter(Boolean))];
 
     const stored = (await getCache()).cache;
-    const refetchAll = force || !filtersMatch(stored, settings.filters);
+    const refetchAll = !filtersMatch(stored, settings.filters);
 
     let cache = pruneCacheChannels(stored, channelSlugs);
     cache = {
@@ -73,10 +82,16 @@ const refreshLocal = async ({ testOnly = false, force = false, settingsOverride 
         }
     };
 
-    // Old timestamps cannot distinguish channels completed by this full pass
-    // from channels not yet forced or still built with the previous filters.
-    if (refetchAll) {
-        await persist({ ...cache, channelFetchedAt: {} });
+    // A changed filter set spoils every channel; a forced pass only the ones
+    // fetched before it was asked for, so a pass queued behind another keeps
+    // what that one just brought back. The drop is persisted up front because a
+    // paused pass resumes unforced, and old timestamps would otherwise pass the
+    // channels it never reached off as fresh.
+    if (refetchAll || force) {
+        await persist({
+            ...cache,
+            channelFetchedAt: refetchAll ? {} : keepFetchedSince(cache.channelFetchedAt, requestedAt)
+        });
     }
 
     const freshSlugs = refetchAll ? null : getFreshChannelSlugs(cache, Date.now());
@@ -129,26 +144,29 @@ const refreshLocal = async ({ testOnly = false, force = false, settingsOverride 
 };
 
 const refreshThroughRuntime = async (options) => {
-    let response;
-    try {
-        response = await runtime.sendMessage({
-            type: MESSAGES.refreshCache,
-            payload: options
-        });
-    } catch (error) {
-        if (RUNTIME_ROUTE_UNAVAILABLE.test(error?.message || "")) {
-            return null;
+    for (let attempt = 1; attempt <= RUNTIME_ATTEMPTS; attempt += 1) {
+        let response;
+        try {
+            response = await runtime.sendMessage({
+                type: MESSAGES.refreshCache,
+                payload: options
+            });
+        } catch (error) {
+            if (RUNTIME_ROUTE_UNAVAILABLE.test(error?.message || "")) {
+                continue;
+            }
+            throw error;
         }
-        throw error;
-    }
 
-    if (response?.ok) {
-        return response.summary || null;
+        if (response?.ok) {
+            return response.summary || null;
+        }
+        if (!response || RUNTIME_ROUTE_UNAVAILABLE.test(response.error || "")) {
+            continue;
+        }
+        throw new Error(response.error || "Cache refresh did not return a result.");
     }
-    if (!response || RUNTIME_ROUTE_UNAVAILABLE.test(response.error || "")) {
-        return null;
-    }
-    throw new Error(response.error || "Cache refresh did not return a result.");
+    return null;
 };
 
 const bootstrapStore = {

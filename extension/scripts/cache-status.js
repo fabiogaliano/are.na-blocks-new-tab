@@ -5,6 +5,64 @@ import { formatRelativeTime } from "./time.js";
 // the status names the age instead of claiming freshness.
 const FRESH_WINDOW_MS = 60 * 60 * 1000;
 
+// Are.na's edge answers traffic it takes for a bot with a 403 carrying this
+// text, whatever the token. Reading it as an auth failure sends the user off to
+// replace a token that works.
+export function isAutomatedAccessBlock(message) {
+    return typeof message === "string" && /\(403\)/.test(message) && /automated access blocked/i.test(message);
+}
+
+/**
+ * Maps a stored refresh error to a label short enough for the cache status
+ * button, so a raw HTML body or long message never overflows it.
+ */
+export function getCacheErrorLabel(message) {
+    if (!message || typeof message !== "string") {
+        return "Error";
+    }
+
+    if (isAutomatedAccessBlock(message)) {
+        return "Blocked by Are.na";
+    }
+
+    const lower = message.toLowerCase();
+
+    if (lower.includes("networkerror") || lower.includes("network error") ||
+        lower.includes("failed to fetch") || lower.includes("dns") ||
+        lower.includes("net::") || lower.includes("offline")) {
+        return "Offline";
+    }
+
+    if (lower.includes("timeout") || lower.includes("aborted") ||
+        lower.includes("abort") || lower.includes("timed out")) {
+        return "Timeout";
+    }
+
+    if (/\(401\)/.test(message) || /\(403\)/.test(message)) {
+        return "Auth error";
+    }
+    if (/\(404\)/.test(message) || lower.includes("not found")) {
+        return "Not found";
+    }
+    if (/\(429\)/.test(message) || lower.includes("rate limit")) {
+        return "Rate limited";
+    }
+    if (/\(5\d{2}\)/.test(message)) {
+        return "Server error";
+    }
+
+    if (lower.includes("already in progress") || lower.includes("busy")) {
+        return "Busy";
+    }
+
+    const stripped = message.replace(/<[^>]*>/g, "").trim();
+    if (stripped.length > 20) {
+        return stripped.slice(0, 17) + "...";
+    }
+
+    return stripped || "Error";
+}
+
 export function getSyncPercent(progress) {
     const total = Number(progress?.channelsTotal);
     if (!Number.isFinite(total) || total <= 0) {

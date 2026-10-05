@@ -14,7 +14,7 @@ import { createBarEditor } from "./bar-customization.js";
 import { canonicalizeSettings, classifySettingsChanges } from "./settings-model.js";
 import { applyTheme } from "./theme.js";
 import { formatRelativeTime } from "./time.js";
-import { describeCacheStatus } from "./cache-status.js";
+import { describeCacheStatus, isAutomatedAccessBlock } from "./cache-status.js";
 import { SETTINGS_PANEL_CHANNEL } from "./settings-panel.js";
 import { createAutoSaver } from "./settings-autosave.js";
 import { getRequestBudget } from "./rate-limiter.js";
@@ -155,6 +155,9 @@ const barEditor = createBarEditor({
 const sanitizeErrorLabel = (message) => {
     if (!message || typeof message !== "string") {
         return "Error";
+    }
+    if (isAutomatedAccessBlock(message)) {
+        return "Blocked by Are.na as automated traffic";
     }
     const lower = message.toLowerCase();
     if (lower.includes("failed to fetch") || lower.includes("network") || lower.includes("offline")) {

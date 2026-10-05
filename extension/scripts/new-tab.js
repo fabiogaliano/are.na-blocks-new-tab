@@ -11,7 +11,7 @@ import { createBarRenderer } from "./bar-customization.js";
 import { createBlockLayout } from "./block-layout.js";
 import { classifySettingsChanges } from "./settings-model.js";
 import { createBookmarksView } from "./bookmarks-view.js";
-import { describeCacheStatus } from "./cache-status.js";
+import { describeCacheStatus, getCacheErrorLabel } from "./cache-status.js";
 import { createSettingsPanel } from "./settings-panel.js";
 import { createRecentRail } from "./recent-rail.js";
 import { getRecentEntries, recordShownBlocks } from "./recent-store.js";
@@ -20,58 +20,6 @@ import { readTabBlockIds, saveTabBlockIds } from "./tab-blocks.js";
 
 const RESIZE_DEBOUNCE = 150;
 const COOLDOWN_TICK_MS = 1000;
-
-/**
- * Maps error messages to short, button-friendly labels.
- * Prevents HTML or long text from overflowing the cache status button.
- */
-const sanitizeErrorLabel = (message) => {
-  if (!message || typeof message !== "string") {
-    return "Error";
-  }
-
-  const lower = message.toLowerCase();
-
-  // Network/connection errors
-  if (lower.includes("networkerror") || lower.includes("network error") ||
-    lower.includes("failed to fetch") || lower.includes("dns") ||
-    lower.includes("net::") || lower.includes("offline")) {
-    return "Offline";
-  }
-
-  // Timeout/abort errors
-  if (lower.includes("timeout") || lower.includes("aborted") ||
-    lower.includes("abort") || lower.includes("timed out")) {
-    return "Timeout";
-  }
-
-  // HTTP status code errors
-  if (/\(401\)/.test(message) || /\(403\)/.test(message)) {
-    return "Auth error";
-  }
-  if (/\(404\)/.test(message) || lower.includes("not found")) {
-    return "Not found";
-  }
-  if (/\(429\)/.test(message) || lower.includes("rate limit")) {
-    return "Rate limited";
-  }
-  if (/\(5\d{2}\)/.test(message)) {
-    return "Server error";
-  }
-
-  // Already in progress
-  if (lower.includes("already in progress") || lower.includes("busy")) {
-    return "Busy";
-  }
-
-  // Fallback: strip HTML and truncate
-  const stripped = message.replace(/<[^>]*>/g, "").trim();
-  if (stripped.length > 20) {
-    return stripped.slice(0, 17) + "...";
-  }
-
-  return stripped || "Error";
-};
 
 const state = {
   settings: null,
@@ -794,7 +742,7 @@ function updateCacheStatus() {
     retryAt: state.cacheMeta.retryAt,
     lastUpdated: state.cacheMeta.lastUpdated || state.cache?.completedAt || 0,
     blockCount: state.cache?.blockIds?.length ?? state.cacheMeta.blockCount ?? 0,
-    errorLabel: sanitizeErrorLabel(state.cacheMeta.lastError),
+    errorLabel: getCacheErrorLabel(state.cacheMeta.lastError),
   });
 
   let ledSpan = button?.querySelector(".cache-led");
